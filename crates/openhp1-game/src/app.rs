@@ -104,6 +104,16 @@ fn touch_screen() -> bool {
     false
 }
 
+#[cfg(target_arch = "wasm32")]
+fn pointer_lock_supported() -> bool {
+    crate::web::pointer_lock_supported()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn pointer_lock_supported() -> bool {
+    true
+}
+
 fn next_redraw_deadline(frame_started: Instant, now: Instant) -> Instant {
     (frame_started + FRAME_INTERVAL).max(now)
 }
@@ -935,9 +945,14 @@ impl Graphics {
         self.input.set_mouse_button(button, state);
     }
 
+    /// Touch screens steer through on-screen controls, and some browsers
+    /// cannot lock the cursor at all.
+    fn cursor_grab_available(&self) -> bool {
+        !self.touch.enabled() && pointer_lock_supported()
+    }
+
     fn capture_input(&mut self) {
-        if self.touch.enabled() {
-            // Touch screens steer through on-screen controls, not a captured cursor.
+        if !self.cursor_grab_available() {
             self.input.captured = true;
             return;
         }
@@ -965,7 +980,7 @@ impl Graphics {
     fn release_input(&mut self) {
         self.input.clear();
         self.touch.release();
-        if !self.touch.enabled() {
+        if self.cursor_grab_available() {
             if let Err(error) = self.window.set_cursor_grab(CursorGrabMode::None) {
                 self.last_error = Some(format!("could not release the mouse: {error}"));
             }

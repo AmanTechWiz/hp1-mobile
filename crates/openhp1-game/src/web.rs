@@ -207,7 +207,27 @@ pub(crate) fn canvas() -> Option<web_sys::HtmlCanvasElement> {
 
 /// Whether the device has a touch screen and needs on-screen controls.
 pub(crate) fn touch_screen() -> bool {
-    web_sys::window().is_some_and(|window| window.navigator().max_touch_points() > 0)
+    web_sys::window().is_some_and(|window| {
+        window.navigator().max_touch_points() > 0 || has_property(&window, "ontouchstart")
+    })
+}
+
+/// Whether the browser can lock the mouse cursor.
+///
+/// iPhone Safari has no Pointer Lock API. winit calls it unconditionally, and
+/// the resulting JavaScript exception unwinds through winit while it holds
+/// internal borrows, which later panics the event loop.
+pub(crate) fn pointer_lock_supported() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .is_some_and(|document| {
+            has_property(&document, "exitPointerLock")
+                && canvas().is_some_and(|canvas| has_property(&canvas, "requestPointerLock"))
+        })
+}
+
+fn has_property(target: &JsValue, name: &str) -> bool {
+    js_sys::Reflect::has(target, &JsValue::from_str(name)).unwrap_or(false)
 }
 
 struct ConsoleLog;
