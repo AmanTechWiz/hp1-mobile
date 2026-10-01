@@ -1,8 +1,9 @@
 //! On-screen controls for touch screens, which have no keyboard or mouse.
 //!
-//! Touches become the same keys, buttons, and mouse motion that the desktop
-//! controls feed into [`InputState`], so gameplay receives the original input
-//! axes either way. A floating stick on the left half moves Harry, dragging
+//! Touches feed the same [`InputState`] as the desktop controls, so gameplay
+//! receives the original input axes either way. A floating analog stick
+//! appears wherever a thumb lands on the left half and moves Harry in any
+//! direction, scaled by how far it is pushed, like a gamepad stick. Dragging
 //! anywhere else looks around, and the buttons hold their mapped key or mouse
 //! button for as long as they are touched.
 
@@ -16,8 +17,9 @@ use super::InputState;
 
 /// Mouse counts produced per logical pixel of finger travel while looking.
 const LOOK_SCALE: f32 = 2.0;
-/// Fraction of the stick radius a finger must travel before a direction holds.
-const STICK_DEAD_ZONE: f32 = 0.35;
+/// Fraction of the stick radius ignored around its center, so a resting
+/// thumb does not drift.
+const STICK_DEAD_ZONE: f32 = 0.12;
 /// Logical height of the game area at which controls reach full size.
 const FULL_SIZE_HEIGHT: f32 = 400.0;
 
@@ -178,14 +180,8 @@ impl TouchControls {
                     origin,
                     position: current,
                 } => {
-                    let radius = layout.stick_radius();
-                    let offset = position - *origin;
-                    if offset.length() > radius {
-                        *origin = position - offset.normalized() * radius;
-                    }
                     *current = position;
-                    let direction = (position - *origin) / radius;
-                    set_stick_keys(input, direction);
+                    input.stick = stick_axes((position - *origin) / layout.stick_radius());
                 }
                 Role::Look { last } => {
                     let delta = (position - *last) * LOOK_SCALE / layout.scale_factor;
@@ -197,7 +193,7 @@ impl TouchControls {
             },
             (TouchPhase::Ended | TouchPhase::Cancelled, Some(index)) => {
                 match self.touches.remove(index).1 {
-                    Role::Stick { .. } => set_stick_keys(input, Vec2::ZERO),
+                    Role::Stick { .. } => input.stick = [0.0; 2],
                     Role::Button(button) => button.set(input, ElementState::Released),
                     Role::Look { .. } => {}
                 }
@@ -240,7 +236,20 @@ impl TouchControls {
             Role::Stick { origin, position } => Some((*origin, *position)),
             _ => None,
         });
-        let (origin, knob) = stick.unwrap_or((layout.stick_home(), layout.stick_home()));
+        let (origin, knob) = stick.map_or_else(
+            || (layout.stick_home(), layout.stick_home()),
+            |(origin, position)| {
+                // The knob stops at the rim while the thumb may travel past it.
+                let offset = position - origin;
+                let limit = layout.stick_radius();
+                let knob = if offset.length() > limit {
+                    origin + offset.normalized() * limit
+                } else {
+                    position
+                };
+                (origin, knob)
+            },
+        );
         let alpha = if stick.is_some() { 60 } else { 30 };
         let radius = layout.stick_radius() * scale;
         painter.circle(
@@ -276,18 +285,16 @@ impl TouchControls {
     }
 }
 
-fn set_stick_keys(input: &mut InputState, direction: Vec2) {
-    let state = |held: bool| {
-        if held {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        }
-    };
-    input.set_key(KeyCode::KeyW, state(direction.y < -STICK_DEAD_ZONE));
-    input.set_key(KeyCode::KeyS, state(direction.y > STICK_DEAD_ZONE));
-    input.set_key(KeyCode::KeyA, state(direction.x < -STICK_DEAD_ZONE));
-    input.set_key(KeyCode::KeyD, state(direction.x > STICK_DEAD_ZONE));
+/// Converts a screen-space stick offset, in stick radii, to `[right, forward]`
+/// axes with a radial dead zone and a unit-length limit.
+fn stick_axes(offset: Vec2) -> [f32; 2] {
+    let length = offset.length();
+    if length <= STICK_DEAD_ZONE {
+        return [0.0; 2];
+    }
+    let strength = ((length - STICK_DEAD_ZONE) / (1.0 - STICK_DEAD_ZONE)).min(1.0);
+    let direction = offset / length * strength;
+    [direction.x, -direction.y]
 }
 
 #[cfg(test)]
@@ -314,30 +321,48 @@ mod tests {
     }
 
     #[test]
-    fn left_stick_holds_movement_keys_until_released() {
+    fn left_stick_moves_in_any_direction_by_how_far_it_is_pushed() {
         let layout = layout();
+        let radius = layout.stick_radius();
         let mut controls = TouchControls::new(true);
         let mut input = InputState::default();
         let start = Pos2::new(300.0, 500.0);
         controls.handle(&touch(1, TouchPhase::Started, start), &layout, &mut input);
-        controls.handle(
-            &touch(1, TouchPhase::Moved, start + Vec2::new(10.0, -100.0)),
-            &layout,
-            &mut input,
-        );
-        assert!(input.keys.contains(&KeyCode::KeyW));
-        assert!(!input.keys.contains(&KeyCode::KeyD));
+        let mut drag = |offset: Vec2, input: &mut InputState| {
+            controls.handle(&touch(1, TouchPhase::Moved, start + offset), &layout, input);
+            input.stick
+        };
 
-        controls.handle(
-            &touch(1, TouchPhase::Moved, start + Vec2::new(100.0, 0.0)),
-            &layout,
-            &mut input,
-        );
-        assert!(input.keys.contains(&KeyCode::KeyD));
-        assert!(!input.keys.contains(&KeyCode::KeyW));
+        assert_eq!(drag(Vec2::new(0.0, -radius * 0.1), &mut input), [0.0; 2]);
+        let [right, forward] = drag(Vec2::new(0.0, -radius * 2.0), &mut input);
+        assert!(right.abs() < 1e-6 && (forward - 1.0).abs() < 1e-6);
+        let [right, forward] = drag(Vec2::new(radius, radius).normalized() * radius, &mut input);
+        assert!((right - forward.abs()).abs() < 1e-6 && forward < 0.0);
+        assert!(((right * right + forward * forward).sqrt() - 1.0).abs() < 1e-5);
+        let [right, _] = drag(Vec2::new(-radius * 0.56, 0.0), &mut input);
+        assert!((right + 0.5).abs() < 1e-5);
+        assert!(input.keys.is_empty());
 
         controls.handle(&touch(1, TouchPhase::Ended, start), &layout, &mut input);
-        assert!(input.keys.is_empty());
+        assert_eq!(input.stick, [0.0; 2]);
+    }
+
+    #[test]
+    fn stick_axes_scale_the_original_movement_axes() {
+        let mut input = InputState {
+            stick: [0.5, 0.5],
+            ..Default::default()
+        };
+        let player = input.player_input(1.0 / 60.0);
+        assert_eq!(player.base_y, 3_000.0);
+        assert_eq!(player.strafe, 3_000.0);
+        assert_eq!(player.base_x, 1_500.0);
+        assert!(player.broom_pitch_up && !player.broom_pitch_down);
+
+        input.stick = [0.0, -0.4];
+        let player = input.player_input(1.0 / 60.0);
+        assert_eq!(player.base_y, -1_200.0);
+        assert!(!player.broom_pitch_up && !player.broom_pitch_down);
     }
 
     #[test]

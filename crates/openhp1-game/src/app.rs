@@ -447,6 +447,8 @@ struct InputState {
     space_requested: bool,
     space_release_requested: bool,
     jump_requested: bool,
+    /// Analog `[right, forward]` movement from the touch stick, each in -1..=1.
+    stick: [f32; 2],
     captured: bool,
 }
 
@@ -504,12 +506,18 @@ impl InputState {
         let pressed = |keys: &HashSet<KeyCode>, choices: &[KeyCode]| {
             choices.iter().any(|key| keys.contains(key)) as u8 as f32
         };
-        let forward = pressed(&self.keys, &[KeyCode::KeyW, KeyCode::ArrowUp]);
-        let backward = pressed(&self.keys, &[KeyCode::KeyS, KeyCode::ArrowDown]);
-        let left = pressed(&self.keys, &[KeyCode::KeyA, KeyCode::ArrowLeft]);
-        let right = pressed(&self.keys, &[KeyCode::KeyD, KeyCode::ArrowRight]);
-        let broom_pitch_up = pressed(&self.keys, &[KeyCode::KeyW, KeyCode::ArrowUp]) != 0.0;
-        let broom_pitch_down = pressed(&self.keys, &[KeyCode::KeyS, KeyCode::ArrowDown]) != 0.0;
+        let [stick_right, stick_forward] = self.stick;
+        let forward =
+            pressed(&self.keys, &[KeyCode::KeyW, KeyCode::ArrowUp]).max(stick_forward.max(0.0));
+        let backward = pressed(&self.keys, &[KeyCode::KeyS, KeyCode::ArrowDown])
+            .max((-stick_forward).max(0.0));
+        let left =
+            pressed(&self.keys, &[KeyCode::KeyA, KeyCode::ArrowLeft]).max((-stick_right).max(0.0));
+        let right =
+            pressed(&self.keys, &[KeyCode::KeyD, KeyCode::ArrowRight]).max(stick_right.max(0.0));
+        // Broom pitch is digital; a stick pushed past halfway holds it.
+        let broom_pitch_up = forward >= 0.5;
+        let broom_pitch_down = backward >= 0.5;
         let casting =
             self.cast_mouse || pressed(&self.keys, &[KeyCode::AltLeft, KeyCode::AltRight]) != 0.0;
         let input = PlayerInput {
@@ -548,6 +556,7 @@ impl InputState {
         self.space_requested = false;
         self.space_release_requested = false;
         self.jump_requested = false;
+        self.stick = [0.0; 2];
     }
 }
 
