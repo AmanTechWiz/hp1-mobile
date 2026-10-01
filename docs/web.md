@@ -35,6 +35,15 @@ IndexedDB database under `/game/...`.
 Settings, saves, and other files the game writes live under `/settings/...` in
 the same database. Removing the game files from the page keeps them.
 
+IndexedDB confirms every write asynchronously, after the game has already read
+it back from memory, so a save reads back for the rest of the session whether
+or not it ever reaches the database. When the browser refuses a write (Private
+Browsing, a full disk, or an evicted database), the page shows a warning naming
+the affected files: a save named there exists only in memory and is gone after
+a reload. The wasm build cannot see this failure itself — `web.rs` declares
+`host_persist` with no return value and no `catch`, so the host reports refused
+writes on the page instead of into Rust.
+
 Safari's Private Browsing refuses to store Blobs in IndexedDB, so imports fail
 there with an explanatory message. Safari may also evict website data that has
 not been used for a while. Adding the page to the Home Screen gives it
@@ -51,7 +60,17 @@ Browsers have no filesystem, and `std::fs` only returns errors on
   files are read through the host on every access and are not cached in wasm
   memory. Only parsed packages stay resident, because a whole installation does
   not fit in mobile Safari's memory budget. Writes stay in memory for the
-  session and are forwarded to IndexedDB.
+  session and are dispatched to IndexedDB when they arrive: the browser runs
+  overlapping readwrite transactions on one store in creation order, so each
+  write starts its own transaction immediately instead of queueing behind
+  earlier ones. The host tracks every dispatched write and flushes them before
+  reloading — `exited` and the Reload button await the queue, capped at two
+  seconds so a stuck transaction cannot hang the exit — while `beforeunload`
+  holds the page open while a write is still in flight and `pagehide`
+  re-dispatches any refused write as a last attempt. A write that the browser
+  still refuses is surfaced on the page as described under Game files;
+  `openhp1Host.storageStatus()` reports `{ pending, failed }` for anything that
+  wants to query it, but no Rust code calls it today.
 - `fs::read_prefix` reads only the start of a file. Package discovery checks the
   four-byte magic this way instead of reading every package whole.
 - `fs::is_absolute` treats rooted paths as absolute, because `Path::is_absolute`
