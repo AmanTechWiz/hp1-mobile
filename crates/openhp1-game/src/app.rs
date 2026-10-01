@@ -174,9 +174,16 @@ impl ApplicationHandler for GameApp {
             self.next_redraw = None;
             match graphics.render() {
                 RenderOutcome::Continue => {
-                    let deadline = next_redraw_deadline(graphics.last_frame, Instant::now());
-                    self.next_redraw = Some(deadline);
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+                    if cfg!(target_arch = "wasm32") {
+                        // Browsers deliver redraws on requestAnimationFrame, which
+                        // already paces frames to the display. A timer on top of
+                        // it lands just after a refresh and skips frames.
+                        graphics.window.request_redraw();
+                    } else {
+                        let deadline = next_redraw_deadline(graphics.last_frame, Instant::now());
+                        self.next_redraw = Some(deadline);
+                        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+                    }
                     self.graphics = Some(graphics);
                 }
                 RenderOutcome::Exit => event_loop.exit(),
