@@ -72,18 +72,22 @@ function directoryRange(directory) {
 // ---------------------------------------------------------------------------
 // Importing an installation
 
+// Matches Default.ini in System or in a language subdirectory such as
+// System/0, which some releases use instead. Group 1 is the installation root.
+const DEFAULT_INI = /^(|.*\/)system\/(?:[^/]+\/)?default\.ini$/i;
+
 function installationEntries(entries) {
-  const markers = entries
-    .map((entry) => entry.path)
-    .filter((path) => /(^|\/)system\/default\.ini$/i.test(path))
+  const roots = entries
+    .map((entry) => DEFAULT_INI.exec(entry.path)?.[1])
+    .filter((root) => root !== undefined)
     .sort((left, right) => left.length - right.length);
-  if (markers.length === 0) {
+  if (roots.length === 0) {
     throw new Error(
       "Could not find System/Default.ini. Choose the game folder that contains " +
         "the System, Maps, and Textures folders, or a ZIP archive of it.",
     );
   }
-  const prefix = markers[0].slice(0, markers[0].length - "System/Default.ini".length);
+  const prefix = roots[0];
   return entries
     .filter((entry) => entry.path.startsWith(prefix))
     .map((entry) => ({ ...entry, path: `${GAME_ROOT}/${entry.path.slice(prefix.length)}` }));
