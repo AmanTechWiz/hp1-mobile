@@ -33,14 +33,16 @@ use winit::{
 };
 
 use self::{
+    adaptive_resolution::AdaptiveResolution,
     console::DeveloperConsole,
     gameplay_settings::GameplaySettings,
-    graphics_settings::{ColorDepth, GraphicsSettings, RESOLUTION_PRESETS},
+    graphics_settings::{ColorDepth, GraphicsSettings, MAX_RENDER_PIXELS, RESOLUTION_PRESETS},
     presentation::Presentation,
     touch::TouchControls,
     ui::GameUi,
 };
 
+mod adaptive_resolution;
 mod console;
 mod gameplay_settings;
 mod graphics_settings;
@@ -104,6 +106,35 @@ fn touch_screen() -> bool {
     false
 }
 
+/// The `[top, right, bottom, left]` safe-area insets of the screen in CSS
+/// pixels: the notch, rounded corners, and home indicator that controls must
+/// stay clear of.
+#[cfg(target_arch = "wasm32")]
+fn safe_area_insets() -> [f32; 4] {
+    crate::web::safe_area_insets()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn safe_area_insets() -> [f32; 4] {
+    [0.0; 4]
+}
+
+/// The internal frame size for a surface. Touch screens render at the
+/// surface's own aspect, so the game fills the display with no black bars,
+/// at the configured height scaled by the adaptive resolution.
+fn render_resolution(
+    touch: bool,
+    surface: [u32; 2],
+    configured: [u32; 2],
+    adaptive: &AdaptiveResolution,
+) -> [u32; 2] {
+    if touch {
+        presentation::match_aspect(surface, adaptive.height(configured[1]), MAX_RENDER_PIXELS)
+    } else {
+        configured
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 fn pointer_lock_supported() -> bool {
     crate::web::pointer_lock_supported()
@@ -112,6 +143,11 @@ fn pointer_lock_supported() -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn pointer_lock_supported() -> bool {
     true
+}
+
+/// Safe-area insets converted from CSS pixels to physical pixels.
+fn physical_insets(scale_factor: f32) -> [f32; 4] {
+    safe_area_insets().map(|inset| inset * scale_factor)
 }
 
 fn next_redraw_deadline(frame_started: Instant, now: Instant) -> Instant {
@@ -602,6 +638,9 @@ struct Graphics {
     player: usize,
     input: InputState,
     touch: TouchControls,
+    adaptive_resolution: AdaptiveResolution,
+    /// Safe-area insets in physical pixels, refreshed when the surface resizes.
+    safe_insets: [f32; 4],
     last_frame: Instant,
     last_error: Option<String>,
     deferred_calls: usize,
@@ -877,7 +916,18 @@ impl Graphics {
         config.present_mode = wgpu::PresentMode::AutoNoVsync;
         config.usage |= wgpu::TextureUsages::COPY_SRC;
         surface.configure(&device, &config);
-        let presentation = Presentation::new(&device, config.format, graphics_settings.resolution);
+        let adaptive_resolution = AdaptiveResolution::default();
+        let safe_insets = physical_insets(window.scale_factor() as f32);
+        let presentation = Presentation::new(
+            &device,
+            config.format,
+            render_resolution(
+                touch_screen(),
+                [config.width, config.height],
+                graphics_settings.resolution,
+                &adaptive_resolution,
+            ),
+        );
         let renderer = Renderer::new_with_settings(
             &device,
             &queue,
@@ -931,6 +981,8 @@ impl Graphics {
             player,
             input: InputState::default(),
             touch: TouchControls::new(touch_screen()),
+            adaptive_resolution,
+            safe_insets,
             last_frame: Instant::now(),
             last_error,
             deferred_calls,
@@ -965,6 +1017,24 @@ impl Graphics {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
+        self.safe_insets = physical_insets(self.window.scale_factor() as f32);
+        self.refit_resolution();
+    }
+
+    /// Resizes the internal frame to follow the surface or the adaptive
+    /// resolution, if it differs from the current one.
+    fn refit_resolution(&mut self) {
+        let size = render_resolution(
+            self.touch.enabled(),
+            [self.config.width, self.config.height],
+            self.graphics_settings.resolution,
+            &self.adaptive_resolution,
+        );
+        if size != self.presentation.size() {
+            self.presentation
+                .resize(&self.device, self.config.format, size);
+            self.renderer.resize(&self.device, self.presentation.size());
+        }
     }
 
     fn mouse_button(&mut self, button: MouseButton, state: ElementState) {
@@ -1027,7 +1097,7 @@ impl Graphics {
             egui::pos2(destination.x as f32, destination.y as f32),
             egui::vec2(destination.width as f32, destination.height as f32),
         );
-        touch::Layout::new(area, self.window.scale_factor() as f32)
+        touch::Layout::new(area, self.window.scale_factor() as f32, self.safe_insets)
     }
 
     fn touch_input(&mut self, touch: &Touch) {
@@ -1043,9 +1113,16 @@ impl Graphics {
             return RenderOutcome::LoadLevel(path, None, None);
         }
         let now = Instant::now();
-        let delta_time = (now - self.last_frame).as_secs_f32().min(0.1);
+        let raw_delta_time = (now - self.last_frame).as_secs_f32();
+        let delta_time = raw_delta_time.min(0.1);
         self.last_frame = now;
         self.frame_time_ms = delta_time * 1_000.0;
+        if self.touch.enabled() {
+            self.touch.update(delta_time, &mut self.input);
+            if self.adaptive_resolution.update(raw_delta_time * 1_000.0) {
+                self.refit_resolution();
+            }
+        }
         let debug_fast_forward = self.input.keys.iter().copied().any(is_fast_forward_key);
         // `player_input` clears this frame's one-shot flags, so capture the
         // skip request before either branch consumes it.
@@ -1410,8 +1487,17 @@ impl Graphics {
         let resolution_changed = self.graphics_settings.resolution != settings.resolution;
         let renderer_changed = self.graphics_settings.renderer != settings.renderer;
         if resolution_changed {
-            self.presentation
-                .resize(&self.device, self.config.format, settings.resolution);
+            self.adaptive_resolution.reset();
+            self.presentation.resize(
+                &self.device,
+                self.config.format,
+                render_resolution(
+                    self.touch.enabled(),
+                    [self.config.width, self.config.height],
+                    settings.resolution,
+                    &self.adaptive_resolution,
+                ),
+            );
         }
         if renderer_changed {
             self.renderer = Renderer::new_with_settings(

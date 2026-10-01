@@ -258,6 +258,27 @@ pub(super) fn fit(source: [u32; 2], surface: [u32; 2]) -> Destination {
     }
 }
 
+/// The internal frame size that fills `surface` edge to edge at `height`
+/// rows, so a phone's long screen shows no black bars.
+///
+/// Width is rounded to an even count and the frame keeps within `max_pixels`,
+/// lowering the height if the aspect would otherwise exceed it.
+pub(super) fn match_aspect(surface: [u32; 2], height: u32, max_pixels: u64) -> [u32; 2] {
+    let surface = valid_size(surface);
+    let mut height = u64::from(height.max(2));
+    let aspect = |height: u64| {
+        let width =
+            (height * u64::from(surface[0]) + u64::from(surface[1]) / 2) / u64::from(surface[1]);
+        (width.max(2) + 1) & !1
+    };
+    let mut width = aspect(height);
+    while width * height > max_pixels && height > 2 {
+        height = height * 9 / 10;
+        width = aspect(height);
+    }
+    [width as u32, (height as u32 + 1) & !1]
+}
+
 fn valid_size(size: [u32; 2]) -> [u32; 2] {
     [size[0].max(1), size[1].max(1)]
 }
@@ -358,6 +379,20 @@ fn pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn match_aspect_fills_the_surface_without_bars() {
+        // iPhone landscape: the frame follows the screen's long aspect.
+        let [width, height] = match_aspect([2556, 1179], 720, 1 << 24);
+        assert_eq!(height, 720);
+        assert_eq!(width % 2, 0);
+        let destination = fit([width, height], [2556, 1179]);
+        assert!(destination.x <= 1 && destination.y <= 1);
+        // The pixel budget lowers the height rather than being exceeded.
+        let [width, height] = match_aspect([2556, 1179], 2000, 1_000_000);
+        assert!(u64::from(width) * u64::from(height) <= 1_000_000);
+        assert_eq!(match_aspect([0, 0], 0, 100)[0] % 2, 0);
+    }
 
     #[test]
     fn fit_centers_without_changing_aspect() {
