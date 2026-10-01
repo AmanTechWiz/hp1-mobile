@@ -43,6 +43,10 @@ on world BSP geometry.
     uses nearest sampling; other sizes use linear sampling and black
     letterbox/pillarbox bars.
 
+The same pipelines run on WebGPU in browsers. Shaders must keep
+implicit-derivative operations in uniform control flow; see
+[`web.md`](web.md#webgpu-shader-constraints).
+
 The renderer does not know package paths or export indices. It accepts decoded
 CPU geometry and texture images plus a caller-provided wgpu device, queue,
 encoder, texture view, format, and viewport size.

@@ -11,9 +11,13 @@ it yourself.
 | Windows | `%APPDATA%\OpenHP1\OpenHP1.ini` |
 | macOS | `~/Library/Application Support/OpenHP1/OpenHP1.ini` |
 | Linux and other Unix systems | `$XDG_CONFIG_HOME/openhp1/OpenHP1.ini`, or `~/.config/openhp1/OpenHP1.ini` when `XDG_CONFIG_HOME` is not set |
+| Web browser | `/settings/OpenHP1.ini` in the page's browser storage (IndexedDB) |
 
 If `OPENHP1_SETTINGS_DIR` is set, OpenHP1 uses that directory instead. This is
 mainly useful for portable installations and troubleshooting.
+
+The browser version cannot edit the file directly. Use the in-game options, or
+use the page's **Delete settings and saves** button to return to the defaults.
 
 Close OpenHP1 before editing the file. Your changes are read the next time the
 game starts. Section names, key names, and named values are not case-sensitive,
@@ -76,7 +80,7 @@ values before writing them. When `Root` is absent, OpenHP1 checks for a local
 `res` directory and the standard Windows installation directory. If the saved
 root is no longer valid, OpenHP1 tries those locations again and remembers the
 first valid replacement. It reports the saved-root error only when auto-detection
-also fails.
+also fails. The browser version always uses its imported game files at `/game`.
 
 ## `[OpenHP1.Gameplay]`
 

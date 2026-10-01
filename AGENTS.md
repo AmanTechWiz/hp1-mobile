@@ -42,6 +42,13 @@ committed copies.
 - Reuse existing crates, modules, helpers, and data flow before adding another
   abstraction. Add a crate only for a real independent responsibility or
   dependency boundary.
+- `openhp1-game` also builds for `wasm32-unknown-unknown`; see
+  [`docs/web.md`](docs/web.md). Keep browser startup in its `web` module and
+  platform differences behind small `cfg` seams rather than parallel code paths.
+- Read and write game and settings files through `openhp1_package::fs`, not
+  `std::fs`, so the web build can serve them from browser storage. Use
+  `web_time` rather than `std::time::{Instant, SystemTime}` in code that runs
+  in the game, and do not block or spawn threads on paths the web build runs.
 - Keep the dependency graph acyclic. Package decoding is the foundation; typed
   map, mesh, texture, and script decoding sits above it; scene/runtime assembly
   sits above those; renderers and executables consume decoded data.
@@ -125,6 +132,9 @@ Keep the focused notes in
 [`docs/mesh-format.md`](docs/mesh-format.md), and
 [`docs/runtime.md`](docs/runtime.md) aligned with behavior.
 
+- Keep implicit-derivative shader operations (`textureSample`,
+  `textureSampleBias`, `dpdx`, `dpdy`, `fwidth`) in uniform control flow.
+  Browsers reject shaders that native naga accepts.
 - Serialized palette colors are RGBA; do not swap red and blue.
 - Base textures and UE1 lightmaps modulate directly in display space using
   UE1's 2x modulation. Do not insert an sRGB-to-linear conversion.

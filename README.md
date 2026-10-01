@@ -11,8 +11,11 @@ OpenHP1 requires the original game files to run.
 | Windows   | 10 or higher   | `x86_64`, `ARM64`        | DirectX 12 |
 | macOS     | 11.0 or higher | `Intel`, `Apple Silicon` | Metal      |
 | Linux[^1] | 5.4 or higher  | `x86_64`, `aarch64`      | Vulkan     |
+| Web[^2]   | iOS/iPadOS 26 or higher (Safari), current desktop browsers | `wasm32` | WebGPU |
 
 [^1]: Linux kernel 5.4 or later and glibc 2.31 or later are recommended, along with a Vulkan-capable GPU with suitable drivers. Older systems may work as well; the provided binaries currently require glibc 2.18 or later.
+
+[^2]: The browser build is new and has not yet been played end to end on an iOS device. See [`docs/web.md`](docs/web.md).
 
 ## Features
 
@@ -54,6 +57,11 @@ The modern renderer is exactly what it says on the package. A much more modern r
 
 OpenHP1 requires original game data but does not distribute it. Start `openhp1-launcher`, choose the original game folder containing `Maps` and `System`, select one of its available languages, then select **Play**. The
 launcher remembers the validated folder and language in `OpenHP1.ini`.
+
+In a browser, open the hosted OpenHP1 page, import the game folder (or, on
+iPhone and iPad, a ZIP of it from the Files app), and select **Play**. The files
+stay in the browser's storage and are never uploaded. On touch screens,
+on-screen controls replace the keyboard and mouse.
 
 For building the game yourself, please refer to the [Development](#development) section below.
 
@@ -114,6 +122,14 @@ You can build and run the game with:
 cargo run -p openhp1-launcher # launcher and game-data configuration
 cargo run -p openhp1-game # debug build
 cargo run -p openhp1-game --release # release build
+```
+
+To build the browser version into `target/web`, install `wasm-bindgen-cli` at the
+version recorded in `Cargo.lock` and the `wasm32-unknown-unknown` target, then
+serve the output over HTTPS:
+
+```sh
+./scripts/build-web.sh --release
 ```
 
 Press the `` ` `` key to open the bottom developer console, enter commands, and
