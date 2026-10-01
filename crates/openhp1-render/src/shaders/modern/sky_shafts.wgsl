@@ -307,15 +307,9 @@ fn soft_sun_visibility(position: vec3<f32>, radius_texels: f32) -> f32 {
 
 @fragment
 fn fragment_window_projection(input: PortalVertex) -> @location(0) vec4<f32> {
-    if input.color.a <= 0.0 {
-        return vec4(0.0);
-    }
     let dimensions = vec2<i32>(textureDimensions(scene_depth));
     let pixel = clamp(vec2<i32>(input.position.xy), vec2(0), dimensions - vec2(1));
     let depth = textureLoad(scene_depth, pixel, 0);
-    if depth >= 1.0 {
-        return vec4(0.0);
-    }
     let uv = (vec2<f32>(pixel) + vec2(0.5)) / vec2<f32>(dimensions);
     let clip = vec4(uv * vec2(2.0, -2.0) + vec2(-1.0, 1.0), depth, 1.0);
     let world_h = settings.inverse_view_projection * clip;
@@ -323,9 +317,6 @@ fn fragment_window_projection(input: PortalVertex) -> @location(0) vec4<f32> {
     let edge_ab = input.b.xyz - input.a.xyz;
     let edge_ac = input.c.xyz - input.a.xyz;
     let determinant = dot(edge_ab, cross(edge_ac, input.direction.xyz));
-    if abs(determinant) < 0.0001 {
-        return vec4(0.0);
-    }
     let inverse_determinant = 1.0 / determinant;
     let prism = prism_coordinates(
         world - input.a.xyz,
@@ -335,9 +326,6 @@ fn fragment_window_projection(input: PortalVertex) -> @location(0) vec4<f32> {
         inverse_determinant,
     );
     let extrusion_length = min(settings.distance_intensity_pixel.x * 0.5, 1500.0);
-    if prism.z <= 2.0 || prism.z >= extrusion_length {
-        return vec4(0.0);
-    }
     let center_prism = prism_coordinates(
         input.center_scale.xyz - input.a.xyz,
         edge_ab,
@@ -356,7 +344,19 @@ fn fragment_window_projection(input: PortalVertex) -> @location(0) vec4<f32> {
         min(aperture_uv.x - input.uv_bounds.x, aperture_uv.y - input.uv_bounds.y),
         min(input.uv_bounds.z - aperture_uv.x, input.uv_bounds.w - aperture_uv.y),
     );
-    let edge_width = max(fwidth(surface_edge) * mix(3.0, 12.0, along_shaft), 0.00001);
+    // Derivatives require uniform control flow, so take them before any pixel
+    // returns early. Every value above is pure, so surviving pixels match.
+    let surface_edge_width = fwidth(surface_edge);
+    let world_dx = dpdx(world);
+    let world_dy = dpdy(world);
+
+    if input.color.a <= 0.0 || depth >= 1.0 || abs(determinant) < 0.0001 {
+        return vec4(0.0);
+    }
+    if prism.z <= 2.0 || prism.z >= extrusion_length {
+        return vec4(0.0);
+    }
+    let edge_width = max(surface_edge_width * mix(3.0, 12.0, along_shaft), 0.00001);
     let surface_coverage = smoothstep(-edge_width, edge_width, surface_edge);
     if surface_coverage <= 0.001 {
         return vec4(0.0);
@@ -365,7 +365,7 @@ fn fragment_window_projection(input: PortalVertex) -> @location(0) vec4<f32> {
         + edge_ab * source_coordinates.x
         + edge_ac * source_coordinates.y
         + input.direction.xyz * prism.z;
-    var receiver_normal = normalize(cross(dpdx(world), dpdy(world)));
+    var receiver_normal = normalize(cross(world_dx, world_dy));
     if dot(receiver_normal, settings.camera_position.xyz - world) < 0.0 {
         receiver_normal = -receiver_normal;
     }

@@ -39,6 +39,14 @@ fn sample_color(uv: vec2<f32>) -> vec4<f32> {
     return textureSampleBias(color_texture, color_sampler, uv, texture_lod_bias);
 }
 
+// The lightmap and visibility atlases have one mip level and use the same
+// minification and magnification filter, so level zero is exactly what
+// implicit-derivative sampling returns. Unlike implicit derivatives, explicit
+// levels are valid in the non-uniform control flow these lookups run in.
+fn sample_lightmap(uv: vec2<f32>) -> vec3<f32> {
+    return textureSampleLevel(lightmap_texture, lightmap_sampler, uv, 0.0).rgb;
+}
+
 struct RealtimeLightmap {
     ambient: vec4<f32>,
     light_range: vec4<u32>,
@@ -350,11 +358,7 @@ fn fragment_modern_macro(input: VertexOutput) -> @location(0) vec4<f32> {
 @fragment
 fn fragment_attachment_light(input: VertexOutput) -> @location(0) vec4<f32> {
     clip_to_portal(input);
-    let light = textureSample(
-        lightmap_texture,
-        lightmap_sampler,
-        input.lightmap_coordinates,
-    ).rgb;
+    let light = sample_lightmap(input.lightmap_coordinates);
     let vertex_light = select(
         input.vertex_color.rgb * 0.5,
         input.environment_color.rgb * 0.5,
@@ -429,11 +433,7 @@ fn apply_modern_light(input: VertexOutput, base: vec4<f32>) -> vec4<f32> {
 
 fn apply_lightmap(input: VertexOutput, color: vec4<f32>) -> vec4<f32> {
     clip_to_portal(input);
-    let light = textureSample(
-        lightmap_texture,
-        lightmap_sampler,
-        input.lightmap_coordinates,
-    ).rgb * 2.0;
+    let light = sample_lightmap(input.lightmap_coordinates) * 2.0;
     let vertex_light = select(
         input.vertex_color.rgb,
         input.environment_color.rgb,
@@ -497,7 +497,7 @@ fn apply_realtime_light_display(input: VertexOutput, color: vec4<f32>) -> vec4<f
         switch light.effect.x {
             case 13u: {
                 if distance_squared < radius_squared {
-                    let visibility = textureSample(visibility_texture, visibility_sampler, visibility_uv).r * 2.0;
+                    let visibility = sample_visibility(visibility_uv) * 2.0;
                     strength = visibility * (1.0 - sqrt(distance_squared) / light.position_radius.w);
                 }
             }
@@ -505,14 +505,14 @@ fn apply_realtime_light_display(input: VertexOutput, color: vec4<f32>) -> vec4<f
                 let distance = sqrt(distance_squared);
                 let normalized = distance / light.position_radius.w;
                 if normalized >= 0.8 && normalized < 1.0 {
-                    let visibility = textureSample(visibility_texture, visibility_sampler, visibility_uv).r * 2.0;
+                    let visibility = sample_visibility(visibility_uv) * 2.0;
                     strength = visibility * (1.0 - 10.0 * abs(normalized - 0.9));
                 }
             }
             case 17u: {
                 let planar = offset.x * offset.x + offset.z * offset.z;
                 if planar < radius_squared {
-                    let visibility = textureSample(visibility_texture, visibility_sampler, visibility_uv).r * 2.0;
+                    let visibility = sample_visibility(visibility_uv) * 2.0;
                     strength = visibility * (1.0 - planar / radius_squared);
                 }
             }
@@ -522,7 +522,7 @@ fn apply_realtime_light_display(input: VertexOutput, color: vec4<f32>) -> vec4<f
                     let normalized_distance = distance_squared / radius_squared;
                     let cosine = dot(offset / distance, light.direction_outer.xyz);
                     let spot = max(1.0 - min((1.0 - cosine) / (1.0 - light.direction_outer.w), 1.0), 0.0);
-                    let visibility = textureSample(visibility_texture, visibility_sampler, visibility_uv).r * 2.0;
+                    let visibility = sample_visibility(visibility_uv) * 2.0;
                     strength = visibility
                         * ue1_distance_falloff(normalized_distance)
                         * abs(dot(offset / distance, normal))
@@ -533,7 +533,7 @@ fn apply_realtime_light_display(input: VertexOutput, color: vec4<f32>) -> vec4<f
             default: {
                 if distance_squared < radius_squared && distance_squared > 0.0 {
                     let distance = sqrt(distance_squared);
-                    let visibility = textureSample(visibility_texture, visibility_sampler, visibility_uv).r * 2.0;
+                    let visibility = sample_visibility(visibility_uv) * 2.0;
                     strength = visibility
                         * ue1_distance_falloff(distance_squared / radius_squared)
                         * abs(dot(offset / distance, normal));
@@ -548,6 +548,11 @@ fn apply_realtime_light_display(input: VertexOutput, color: vec4<f32>) -> vec4<f
         }
     }
     return vec4(color.rgb * illumination * 2.0, color.a);
+}
+
+// Single-level like the lightmap atlas; see sample_lightmap.
+fn sample_visibility(uv: vec2<f32>) -> f32 {
+    return textureSampleLevel(visibility_texture, visibility_sampler, uv, 0.0).r;
 }
 
 fn ue1_distance_falloff(distance_squared: f32) -> f32 {
