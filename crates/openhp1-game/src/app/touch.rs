@@ -1,11 +1,14 @@
 //! On-screen controls for touch screens, which have no keyboard or mouse.
 //!
 //! Touches feed the same [`InputState`] as the desktop controls, so gameplay
-//! receives the original input axes either way. A floating analog stick
-//! appears wherever a thumb lands on the left half and moves Harry in any
-//! direction, scaled by how far it is pushed, like a gamepad stick. Dragging
-//! anywhere else looks around, and the buttons hold their mapped key or mouse
-//! button for as long as they are touched.
+//! receives the original input axes either way. The overlay reads like a
+//! gamepad HUD and is fully drawn from the first frame: the stick base with
+//! its center dot sits bottom left, the action buttons bottom right, and
+//! Pause top right, so nothing has to be discovered by touching. A floating
+//! analog stick appears wherever a thumb lands on the left half and moves
+//! Harry in any direction, scaled by how far it is pushed, like a gamepad
+//! stick. Dragging anywhere else looks around, and the buttons hold their
+//! mapped key or mouse button for as long as they are touched.
 
 use egui::{Align2, Color32, FontId, Id, LayerId, Order, Pos2, Rect, Stroke, Vec2};
 use winit::{
@@ -112,10 +115,14 @@ impl Layout {
         Pos2::new(self.area.min.x + inset, self.area.max.y - inset)
     }
 
+    /// The drawn circle is also the floor of the hit target: [`Self::button_at`]
+    /// accepts touches up to 1.25 times this, so both sizes grow together and
+    /// the cluster spacing in [`Self::center`] keeps the targets tangent at
+    /// worst, never overlapping.
     fn radius(&self, button: Button) -> f32 {
         match button {
-            Button::Jump | Button::Cast => 38.0 * self.unit,
-            Button::Pause | Button::Boost | Button::Brake | Button::Skip => 28.0 * self.unit,
+            Button::Jump | Button::Cast => 42.0 * self.unit,
+            Button::Pause | Button::Boost | Button::Brake | Button::Skip => 30.0 * self.unit,
         }
     }
 
@@ -217,11 +224,19 @@ impl TouchControls {
     ) -> bool {
         let position = Pos2::new(touch.location.x as f32, touch.location.y as f32);
         let existing = self.touches.iter().position(|(id, _)| *id == touch.id);
+        // `release()` forgets every role when the input state is cleared
+        // (menu open, focus lost), but the fingers themselves may still be
+        // down. Their later events would find no role and do nothing until
+        // lifted, so an untracked finger is adopted again on `Moved` as if it
+        // had just landed: the first move only records a position, so nothing
+        // jumps. Pause stays edge-triggered on `Started`, because a thumb
+        // resuming over it must not bounce straight back into the menu, and
+        // an untracked `Ended`/`Cancelled` holds nothing, so it is ignored.
         match (touch.phase, existing) {
-            (TouchPhase::Started, None) => {
+            (TouchPhase::Started | TouchPhase::Moved, None) => {
                 let role =
                     if let Some(button) = layout.button_at(position, self.broom, self.cutscene) {
-                        if button == Button::Pause {
+                        if button == Button::Pause && touch.phase == TouchPhase::Started {
                             return true;
                         }
                         button.set(input, ElementState::Pressed);
@@ -236,22 +251,35 @@ impl TouchControls {
                     };
                 self.touches.push((touch.id, role));
             }
-            (TouchPhase::Moved, Some(index)) => match &mut self.touches[index].1 {
-                Role::Stick {
-                    origin,
-                    position: current,
-                } => {
-                    *current = position;
-                    input.stick = stick_axes((position - *origin) / layout.stick_radius());
+            (TouchPhase::Moved, Some(index)) => {
+                // Only the first look finger steers the camera; a second one
+                // would accumulate into the same delta and double the look
+                // speed. It keeps tracking its own position anyway, so
+                // taking over when the leader lifts starts from where it is.
+                let leads_look = self
+                    .touches
+                    .iter()
+                    .position(|(_, role)| matches!(role, Role::Look { .. }))
+                    == Some(index);
+                match &mut self.touches[index].1 {
+                    Role::Stick {
+                        origin,
+                        position: current,
+                    } => {
+                        *current = position;
+                        input.stick = stick_axes((position - *origin) / layout.stick_radius());
+                    }
+                    Role::Look { last } => {
+                        if leads_look {
+                            let delta = (position - *last) * LOOK_SCALE / layout.scale_factor;
+                            input.mouse_delta.0 += f64::from(delta.x);
+                            input.mouse_delta.1 += f64::from(delta.y);
+                        }
+                        *last = position;
+                    }
+                    Role::Button(_) => {}
                 }
-                Role::Look { last } => {
-                    let delta = (position - *last) * LOOK_SCALE / layout.scale_factor;
-                    input.mouse_delta.0 += f64::from(delta.x);
-                    input.mouse_delta.1 += f64::from(delta.y);
-                    *last = position;
-                }
-                Role::Button(_) => {}
-            },
+            }
             (TouchPhase::Ended | TouchPhase::Cancelled, Some(index)) => {
                 match self.touches.remove(index).1 {
                     Role::Stick { .. } => input.stick = [0.0; 2],
@@ -264,7 +292,10 @@ impl TouchControls {
         false
     }
 
-    /// Forgets every active touch after `input` was cleared.
+    /// Forgets every active touch after `input` was cleared, so a button
+    /// cannot keep asserting an input the state no longer remembers. A finger
+    /// that is physically still down is not lost: [`Self::handle`] adopts it
+    /// again on its next `Moved` instead of leaving it dead until lifted.
     pub(super) fn release(&mut self) {
         self.touches.clear();
     }
@@ -291,50 +322,64 @@ impl TouchControls {
         let to_screen = |position: Pos2| screen.min + (position - area.min) * scale;
         let painter =
             context.layer_painter(LayerId::new(Order::Foreground, Id::new("touch_controls")));
-        let stroke = Stroke::new(1.5, Color32::from_white_alpha(110));
+        let stroke = Stroke::new(2.0, Color32::from_white_alpha(150));
+        let rest_stroke = Stroke::new(1.5, Color32::from_white_alpha(90));
 
         let stick = self.touches.iter().find_map(|(_, role)| match role {
             Role::Stick { origin, position } => Some((*origin, *position)),
             _ => None,
         });
-        let (origin, knob) = stick.map_or_else(
-            || (layout.stick_home(), layout.stick_home()),
-            |(origin, position)| {
-                // The knob stops at the rim while the thumb may travel past it.
-                let offset = position - origin;
-                let limit = layout.stick_radius();
-                let knob = if offset.length() > limit {
-                    origin + offset.normalized() * limit
-                } else {
-                    position
-                };
-                (origin, knob)
-            },
-        );
-        let alpha = if stick.is_some() { 60 } else { 30 };
         let radius = layout.stick_radius() * scale;
-        painter.circle(
-            to_screen(origin),
-            radius,
-            Color32::from_black_alpha(alpha),
-            stroke,
-        );
-        painter.circle(
-            to_screen(knob),
-            radius * 0.45,
-            Color32::from_white_alpha(alpha + 20),
-            stroke,
-        );
+        // The base ring and center dot are always drawn at the stick's home,
+        // so a first-time player sees where the stick will come up before
+        // touching anything; the knob only appears under the thumb.
+        let home = to_screen(layout.stick_home());
+        painter.circle(home, radius, Color32::from_black_alpha(70), rest_stroke);
+        painter.circle_filled(home, radius * 0.1, Color32::from_white_alpha(170));
+        if let Some((origin, position)) = stick {
+            // The knob stops at the rim while the thumb may travel past it.
+            let offset = position - origin;
+            let limit = layout.stick_radius();
+            let knob = if offset.length() > limit {
+                origin + offset.normalized() * limit
+            } else {
+                position
+            };
+            let origin = to_screen(origin);
+            if origin != home {
+                // A floating stick still marks where it came to rest.
+                painter.circle(origin, radius, Color32::TRANSPARENT, rest_stroke);
+            }
+            painter.circle(
+                to_screen(knob),
+                radius * 0.45,
+                Color32::from_white_alpha(120),
+                stroke,
+            );
+        }
 
         for button in visible_buttons(self.broom, self.cutscene) {
             let center = to_screen(layout.center(button));
             let radius = layout.radius(button) * scale;
-            let fill = if self.held(button) {
-                Color32::from_white_alpha(90)
+            let held = self.held(button);
+            // A held button fills and outlines brightly, and flips its glyph
+            // to dark, so the pressed state reads at a glance.
+            let fill = if held {
+                Color32::from_white_alpha(120)
             } else {
-                Color32::from_black_alpha(70)
+                Color32::from_black_alpha(90)
             };
-            painter.circle(center, radius, fill, stroke);
+            let button_stroke = if held {
+                Stroke::new(3.0, Color32::from_white_alpha(240))
+            } else {
+                stroke
+            };
+            let glyph = if held {
+                Color32::from_black_alpha(230)
+            } else {
+                Color32::from_white_alpha(230)
+            };
+            painter.circle(center, radius, fill, button_stroke);
             if button == Button::Pause {
                 let bar = Vec2::new(radius * 0.16, radius * 0.5);
                 for side in [-1.0, 1.0] {
@@ -344,7 +389,7 @@ impl TouchControls {
                             bar * 2.0,
                         ),
                         radius * 0.05,
-                        Color32::from_white_alpha(220),
+                        glyph,
                     );
                 }
                 continue;
@@ -353,8 +398,8 @@ impl TouchControls {
                 center,
                 Align2::CENTER_CENTER,
                 button.label(),
-                FontId::proportional(radius * 0.55),
-                Color32::from_white_alpha(220),
+                FontId::proportional(radius * 0.6),
+                glyph,
             );
         }
     }
@@ -460,6 +505,47 @@ mod tests {
     }
 
     #[test]
+    fn only_the_first_look_finger_drives_the_camera() {
+        let layout = layout();
+        let mut controls = TouchControls::new(true);
+        let mut input = InputState::default();
+        let leader = Pos2::new(1000.0, 300.0);
+        let second = Pos2::new(1000.0, 500.0);
+        controls.handle(&touch(7, TouchPhase::Started, leader), &layout, &mut input);
+        controls.handle(&touch(8, TouchPhase::Started, second), &layout, &mut input);
+
+        // The second finger would otherwise accumulate into the same delta
+        // and double the look speed.
+        controls.handle(
+            &touch(8, TouchPhase::Moved, second + Vec2::new(30.0, -10.0)),
+            &layout,
+            &mut input,
+        );
+        assert_eq!(input.mouse_delta, (0.0, 0.0));
+
+        controls.handle(
+            &touch(7, TouchPhase::Moved, leader + Vec2::new(24.0, -12.0)),
+            &layout,
+            &mut input,
+        );
+        assert_eq!(
+            input.mouse_delta,
+            (f64::from(12.0 * LOOK_SCALE), f64::from(-6.0 * LOOK_SCALE))
+        );
+
+        // Once the leader lifts, the second finger takes over from its own
+        // tracked position, so the camera does not jump.
+        input.mouse_delta = (0.0, 0.0);
+        controls.handle(&touch(7, TouchPhase::Ended, leader), &layout, &mut input);
+        controls.handle(
+            &touch(8, TouchPhase::Moved, second + Vec2::new(50.0, -10.0)),
+            &layout,
+            &mut input,
+        );
+        assert_eq!(input.mouse_delta.0, f64::from(10.0 * LOOK_SCALE));
+    }
+
+    #[test]
     fn buttons_hold_their_desktop_inputs_and_menu_is_requested() {
         let layout = layout();
         let mut controls = TouchControls::new(true);
@@ -480,6 +566,52 @@ mod tests {
 
         let pause = layout.center(Button::Pause);
         assert!(controls.handle(&touch(3, TouchPhase::Started, pause), &layout, &mut input));
+    }
+
+    #[test]
+    fn touches_still_down_when_the_menu_opens_recover_on_resume() {
+        let layout = layout();
+        let mut controls = TouchControls::new(true);
+        let mut input = InputState::default();
+        let jump = layout.center(Button::Jump);
+        let look = Pos2::new(1000.0, 300.0);
+        controls.handle(&touch(1, TouchPhase::Started, jump), &layout, &mut input);
+        controls.handle(&touch(2, TouchPhase::Started, look), &layout, &mut input);
+
+        // Opening the menu clears the input state and forgets the roles,
+        // while both fingers are physically still down.
+        input.clear();
+        controls.release();
+        assert!(input.keys.is_empty());
+
+        // Their motion adopts them again instead of leaving them dead until
+        // lifted: the button re-asserts its key, the look finger re-anchors
+        // on its first move and drives look from the second one on.
+        controls.handle(&touch(1, TouchPhase::Moved, jump), &layout, &mut input);
+        assert!(controls.held(Button::Jump));
+        assert!(input.keys.contains(&KeyCode::Space));
+        controls.handle(
+            &touch(2, TouchPhase::Moved, look + Vec2::new(4.0, 0.0)),
+            &layout,
+            &mut input,
+        );
+        assert_eq!(input.mouse_delta, (0.0, 0.0));
+        controls.handle(
+            &touch(2, TouchPhase::Moved, look + Vec2::new(24.0, 0.0)),
+            &layout,
+            &mut input,
+        );
+        assert_eq!(input.mouse_delta.0, f64::from(10.0 * LOOK_SCALE));
+
+        // A resuming thumb resting over Pause is adopted without reopening
+        // the menu; Pause only fires from a fresh tap.
+        controls.release();
+        let pause = layout.center(Button::Pause);
+        assert!(!controls.handle(&touch(1, TouchPhase::Moved, pause), &layout, &mut input));
+        controls.handle(&touch(1, TouchPhase::Ended, pause), &layout, &mut input);
+
+        // Lifting a finger that was never tracked holds nothing.
+        assert!(!controls.handle(&touch(3, TouchPhase::Ended, look), &layout, &mut input));
     }
 
     #[test]
