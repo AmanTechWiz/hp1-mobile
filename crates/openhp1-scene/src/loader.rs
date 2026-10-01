@@ -12,7 +12,7 @@ use openhp1_map::{
     TriangleMesh, VertexLighting, bsp_sphere_leaves, bsp_zone_at, hsb_to_rgb,
 };
 use openhp1_mesh::{Mesh, MeshAnimationSequence, SkeletalAnimation};
-use openhp1_package::{ObjectReference, Package, PackageStore, ResolveError, ResolvedObject};
+use openhp1_package::{ObjectReference, Package, PackageStore, ResolveError, ResolvedObject, fs};
 use openhp1_physics::BspCollision;
 use openhp1_runtime::{
     ParticleColor, ParticleEmitter, ParticleFloat, ParticleWind, RuntimeObject, WeaponAttachment,
@@ -118,8 +118,7 @@ impl LoadedScene {
     }
 
     pub fn load(path: PathBuf) -> Result<Self> {
-        let path = path
-            .canonicalize()
+        let path = fs::canonicalize(&path)
             .with_context(|| format!("failed to locate {}", path.display()))?;
         let game_root = path
             .parent()
@@ -130,7 +129,7 @@ impl LoadedScene {
         let map_directory = path.parent().expect("validated map path");
         let mut levels = packages
             .package_paths()
-            .filter_map(|candidate| candidate.canonicalize().ok())
+            .filter_map(|candidate| fs::canonicalize(candidate).ok())
             .filter(|candidate| candidate.parent() == Some(map_directory))
             .collect::<Vec<_>>();
         if !levels.contains(&path) {

@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    fs,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -8,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use egui::{Align2, Color32, FontId, Id, LayerId, Order, Pos2, Rect, Sense, TextureHandle, Vec2};
 use openhp1_audio::AudioClip;
-use openhp1_package::{ConfigEntry, ObjectReference, PackageStore, ResolvedObject};
+use openhp1_package::{ConfigEntry, ObjectReference, PackageStore, ResolvedObject, fs};
 use openhp1_render::{AmbientOcclusion, Antialiasing, DisplaySettings, RendererMode, ToneMapper};
 use openhp1_runtime::{BossHealthUiState, HudGameKind, PlayerUiState, ScriptRuntime};
 use openhp1_texture::{Palette, Texture};
@@ -4040,6 +4039,8 @@ fn is_startup_map(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[test]

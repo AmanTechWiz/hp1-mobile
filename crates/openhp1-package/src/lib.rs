@@ -7,6 +7,7 @@
 
 mod archive;
 mod error;
+pub mod fs;
 mod object;
 mod package;
 mod resolver;

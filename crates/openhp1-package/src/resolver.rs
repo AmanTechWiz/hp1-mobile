@@ -1,16 +1,14 @@
+#[cfg(not(target_arch = "wasm32"))]
+use std::env;
 use std::{
     collections::HashMap,
-    env,
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use thiserror::Error;
 
-use crate::{Export, ObjectReference, PACKAGE_MAGIC, Package, PackageSummary};
+use crate::{Export, ObjectReference, PACKAGE_MAGIC, Package, PackageSummary, fs};
 
 pub type ResolveResult<T> = std::result::Result<T, ResolveError>;
 
@@ -230,6 +228,12 @@ fn read_openhp1_ini(settings_dir: &Path) -> std::io::Result<Option<String>> {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn inferred_game_roots() -> Result<Vec<PathBuf>, GameInstallationError> {
+    Ok(vec![PathBuf::from(fs::WEB_GAME_ROOT)])
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn inferred_game_roots() -> Result<Vec<PathBuf>, GameInstallationError> {
     let current_directory = env::current_dir().map_err(|source| GameInstallationError::Io {
         path: PathBuf::from("current directory"),
@@ -714,6 +718,13 @@ struct ConfigFiles {
 }
 
 /// Returns the platform-specific directory for OpenHP1 settings and user data.
+#[cfg(target_arch = "wasm32")]
+pub fn settings_dir() -> PathBuf {
+    PathBuf::from(fs::WEB_SETTINGS_DIR)
+}
+
+/// Returns the platform-specific directory for OpenHP1 settings and user data.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn settings_dir() -> PathBuf {
     if let Some(path) = env::var_os("OPENHP1_SETTINGS_DIR") {
         return PathBuf::from(path);
@@ -1198,6 +1209,26 @@ pub fn write_derived_file_atomically(path: &Path, contents: &[u8]) -> ResolveRes
         path: parent.to_path_buf(),
         source,
     })?;
+    replace_file(parent, path, contents)
+}
+
+/// Browser storage replaces a file's complete contents in one step.
+#[cfg(target_arch = "wasm32")]
+fn replace_file(_parent: &Path, path: &Path, contents: &[u8]) -> ResolveResult<()> {
+    fs::write(path, contents).map_err(|source| ResolveError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn replace_file(parent: &Path, path: &Path, contents: &[u8]) -> ResolveResult<()> {
+    use std::{
+        fs::OpenOptions,
+        io::Write,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -1236,7 +1267,7 @@ pub fn write_derived_file_atomically(path: &Path, contents: &[u8]) -> ResolveRes
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_arch = "wasm32")))]
 fn rename_atomically(temporary: &Path, path: &Path) -> std::io::Result<()> {
     fs::rename(temporary, path)
 }
@@ -1323,11 +1354,7 @@ fn scan_package_directory(
 }
 
 fn has_package_magic(path: &Path) -> bool {
-    let mut magic = [0; 4];
-    File::open(path)
-        .and_then(|mut file| file.read_exact(&mut magic))
-        .is_ok()
-        && magic == PACKAGE_MAGIC.to_le_bytes()
+    fs::read_prefix(path, 4).is_ok_and(|magic| magic == PACKAGE_MAGIC.to_le_bytes())
 }
 
 #[derive(Debug, Error)]

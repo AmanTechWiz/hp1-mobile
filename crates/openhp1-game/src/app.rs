@@ -1,8 +1,6 @@
 use std::{
     collections::HashSet,
     f32::consts::TAU,
-    fs::{self, OpenOptions},
-    io::Write,
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, mpsc},
@@ -12,6 +10,7 @@ use std::{
 use anyhow::{Context, Result};
 use glam::{Mat3, Quat, Vec3};
 use openhp1_audio::AudioPlayer;
+use openhp1_package::{fs, write_derived_file_atomically};
 use openhp1_render::{Camera, DisplaySettings, RenderStats, Renderer, RendererSettings};
 use openhp1_runtime::{
     ActorAction, ConsoleCommandAction, ConsoleCommandHost, ConsoleCommands, PlayerInput,
@@ -22,7 +21,7 @@ use openhp1_scene::{
     render_to_unreal, unreal_to_render,
 };
 use tracing::error;
-use web_time::{Instant, SystemTime, UNIX_EPOCH};
+use web_time::Instant;
 use wgpu::{CurrentSurfaceTexture, SurfaceConfiguration};
 use winit::{
     application::ApplicationHandler,
@@ -1897,33 +1896,8 @@ fn map_identifier(map: &Path, game_root: &Path) -> Result<String> {
 }
 
 fn write_save_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().context("save file has no parent directory")?;
-    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("save file has no valid name")?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let temporary = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), nonce));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .with_context(|| format!("failed to create {}", temporary.display()))?;
-    let result = file.write_all(bytes).and_then(|()| file.sync_all());
-    drop(file);
-    if let Err(error) = result {
-        let _ = fs::remove_file(&temporary);
-        return Err(error).with_context(|| format!("failed to write {}", temporary.display()));
-    }
-    if let Err(error) = fs::rename(&temporary, path) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error).with_context(|| format!("failed to replace {}", path.display()));
-    }
-    Ok(())
+    write_derived_file_atomically(path, bytes)
+        .with_context(|| format!("failed to replace {}", path.display()))
 }
 
 struct ScreenshotReadback {
@@ -2003,7 +1977,7 @@ fn next_screenshot_path(directory: &Path, snapshot: Option<u32>) -> Result<PathB
     let prefix = snapshot.map_or_else(|| "Shot".to_owned(), |value| format!("Snap{value}"));
     for index in 0..=u16::MAX {
         let path = directory.join(format!("{prefix}{index:04}.bmp"));
-        if !path.exists() {
+        if fs::metadata(&path).is_err() {
             return Ok(path);
         }
     }
@@ -2095,6 +2069,11 @@ fn bmp_bytes(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use super::*;
 
     #[test]

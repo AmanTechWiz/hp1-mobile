@@ -1,11 +1,8 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 use image::ImageFormat;
-use openhp1_package::{PackageStore, ResolvedObject};
+use openhp1_package::{PackageStore, ResolvedObject, fs};
 use tracing::warn;
 
 use crate::{TextureImage, TextureMipImage};
@@ -66,10 +63,7 @@ fn find_override(game_root: &Path, qualified_name: &str) -> Option<PathBuf> {
 
 fn find_child(directory: &Path, name: &str, want_directory: bool) -> Option<PathBuf> {
     let exact = directory.join(name);
-    if exact
-        .metadata()
-        .is_ok_and(|metadata| metadata.is_dir() == want_directory)
-    {
+    if fs::metadata(&exact).is_ok_and(|metadata| metadata.is_dir() == want_directory) {
         return Some(exact);
     }
     fs::read_dir(directory)
@@ -287,6 +281,8 @@ fn write_u32(bytes: &mut [u8], offset: usize, value: u32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     fn dds(fourcc: &[u8; 4], width: u32, height: u32, mip_count: u32, data: &[u8]) -> Vec<u8> {

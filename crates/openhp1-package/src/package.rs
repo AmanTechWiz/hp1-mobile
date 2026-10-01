@@ -1,7 +1,8 @@
-use std::{fs, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
 use crate::{
     error::{Error, Result},
+    fs,
     object::ObjectReader,
     summary::PackageSummary,
     tables::read_summary,
