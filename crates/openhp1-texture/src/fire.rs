@@ -1,7 +1,6 @@
-use std::{
-    sync::{Mutex, OnceLock},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::{Mutex, OnceLock};
+
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::{Error, Palette, Result, texture::rgba};
 

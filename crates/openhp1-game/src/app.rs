@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, mpsc},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -22,6 +22,7 @@ use openhp1_scene::{
     render_to_unreal, unreal_to_render,
 };
 use tracing::error;
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 use wgpu::{CurrentSurfaceTexture, SurfaceConfiguration};
 use winit::{
     application::ApplicationHandler,

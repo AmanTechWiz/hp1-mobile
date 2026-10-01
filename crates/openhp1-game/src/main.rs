@@ -6,7 +6,6 @@ use std::{
     fs::{self, File},
     path::PathBuf,
     sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
@@ -16,6 +15,7 @@ use openhp1_render::RendererSettings;
 use openhp1_scene::LoadedScene;
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
+use web_time::{SystemTime, UNIX_EPOCH};
 use winit::event_loop::EventLoop;
 
 fn main() -> Result<()> {

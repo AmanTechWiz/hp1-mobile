@@ -2089,6 +2089,7 @@ dependencies = [
  "pollster",
  "tracing",
  "tracing-subscriber",
+ "web-time",
  "wgpu",
  "winit",
 ]
@@ -2197,6 +2198,7 @@ version = "0.1.0"
 dependencies = [
  "openhp1-package",
  "thiserror 2.0.19",
+ "web-time",
 ]
 
 [[package]]

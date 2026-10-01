@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -12,6 +12,7 @@ use openhp1_package::{ConfigEntry, ObjectReference, PackageStore, ResolvedObject
 use openhp1_render::{AmbientOcclusion, Antialiasing, DisplaySettings, RendererMode, ToneMapper};
 use openhp1_runtime::{BossHealthUiState, HudGameKind, PlayerUiState, ScriptRuntime};
 use openhp1_texture::{Palette, Texture};
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 use super::{
     gameplay_settings::GameplaySettings,

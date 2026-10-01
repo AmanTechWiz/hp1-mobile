@@ -2,11 +2,12 @@ use std::{
     fmt::Write as _,
     fs::{self, OpenOptions},
     io::{ErrorKind, Write as _},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
 use openhp1_scene::render_to_unreal;
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::{Command, Graphics};
 
