@@ -79,6 +79,9 @@ build has no threads and cannot block:
   a device per level.
 - winit runs through `EventLoopExtWebSys::spawn_app` on the page's
   `openhp1-canvas`, which CSS sizes to the viewport.
+- Frames are paced by `requestAnimationFrame`: each frame requests the next
+  redraw immediately. The native 60 Hz deadline timer would expire just after
+  a display refresh and skip it.
 - Screenshots need a blocking GPU readback, so they report an error in the
   browser.
 - Map loading still runs synchronously and blocks the page while it loads.
@@ -106,23 +109,31 @@ shader compile and render without validation errors in WebKit and Chromium.
 
 ## Touch controls
 
-When `navigator.maxTouchPoints` is non-zero, the game skips cursor capture and
-draws on-screen controls over the presented game image:
+When the browser exposes touch input (`navigator.maxTouchPoints` or
+`ontouchstart`), the game skips cursor capture and draws on-screen controls over
+the presented game image:
 
 | Control | Desktop equivalent |
 | --- | --- |
-| Floating stick, left half | `W`/`A`/`S`/`D` (35% dead zone) |
+| Floating analog stick, anchored where the thumb lands on the left half | `W`/`A`/`S`/`D`, scaled by how far the stick is pushed (12% radial dead zone) |
 | Drag elsewhere | Mouse motion (2 counts per logical pixel) |
 | Jump | `Space` |
 | Cast | Left mouse button |
-| Boost / Brake | `Z` / `X` |
-| Menu | `Escape` (pause menu) |
+| Boost / Brake (only while the player is `BroomHarry`) | `Z` / `X` |
+| Pause (top right, clear of the health HUD) | `Escape` (pause menu) |
 
-Touches drive the same `InputState` as the desktop bindings, so gameplay sees
-the original input axes. Menus receive touches through egui as pointer input.
+The stick's `[right, forward]` vector scales the same `aBaseY`, `aStrafe`, and
+`aBaseX` axes the keys drive, so a partial push walks slower. Broom pitch is
+digital and holds once the stick passes halfway. Touches drive the same
+`InputState` as the desktop bindings, so gameplay sees the original input axes. Menus receive touches through egui as pointer input.
 Holding Cast while dragging to look traces spell gestures. Controls are laid out
 inside the letterboxed game area, because they are drawn into the game image.
-A widescreen internal resolution leaves more room for them on phones.
+Touch devices therefore default to a 1280x720 internal resolution when no
+resolution is saved, which fills wide phone screens.
+
+Browsers without the Pointer Lock API (iPhone Safari) never request cursor
+capture: winit calls the API unconditionally, and the resulting exception left
+winit's internal borrows held and panicked the event loop.
 
 ## Testing
 
@@ -132,5 +143,14 @@ A widescreen internal resolution leaves more room for them on phones.
 - Shader compilation was checked by rendering synthetic scenes in both
   engines.
 
-Full gameplay in the browser still needs a real installation and has not been
-verified end to end on an iOS device.
+- With a local installation, the menu, storybook, and `Lev_Tut1` were played in
+  WebKit (iPhone 15 Pro landscape emulation), Chromium with real touch events,
+  and Brave. `Lev_Tut1` holds 60 fps and uses about 520 MB of wasm memory.
+  Under 2x CPU throttling it stays at 52-60 fps; under 4x it drops to about 29.
+
+Chromium's device emulation with a device scale factor above 1 sizes the canvas
+backing store at CSS pixels while reporting the scaled `devicePixelRatio`, so
+input lands at the wrong position. Test touch input there with a scale factor
+of 1. Real browsers are unaffected.
+
+The game has not yet been verified on a physical iOS device.
