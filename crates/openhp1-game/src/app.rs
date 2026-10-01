@@ -738,7 +738,13 @@ impl Graphics {
         let graphics_settings = match graphics_settings {
             Some(settings) => settings,
             None => {
-                let settings = GraphicsSettings::load(&console, renderer_override);
+                let default_resolution = if touch_screen() {
+                    graphics_settings::TOUCH_DEFAULT_RESOLUTION
+                } else {
+                    graphics_settings::DEFAULT_RESOLUTION
+                };
+                let settings =
+                    GraphicsSettings::load(&console, renderer_override, default_resolution);
                 if let Err(error) = settings.save(&console) {
                     last_error = Some(format!("could not initialize graphics settings: {error}"));
                 }
@@ -1143,6 +1149,12 @@ impl Graphics {
             &mut egui_input,
             [self.config.width, self.config.height],
             self.window.scale_factor() as f32,
+        );
+        self.touch.set_broom(
+            self.scene
+                .actors
+                .get(self.player)
+                .is_some_and(|actor| actor.class_name.eq_ignore_ascii_case("BroomHarry")),
         );
         let touch_layout =
             (self.touch.enabled() && !self.game_ui.is_open() && !self.debug_console.is_open())

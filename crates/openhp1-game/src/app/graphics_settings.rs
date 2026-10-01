@@ -14,6 +14,10 @@ const LEGACY_SECTION: &str = "OpenHP1.Graphics";
 const MAX_RENDER_PIXELS: u64 = 3840 * 2160;
 
 pub(super) const DEFAULT_RESOLUTION: [u32; 2] = [1024, 768];
+/// Phones and tablets are wide and steer with on-screen controls, so they
+/// default to a widescreen image that keeps the controls off the scene's
+/// center and stays light enough for mobile GPUs.
+pub(super) const TOUCH_DEFAULT_RESOLUTION: [u32; 2] = [1280, 720];
 pub(super) const DEFAULT_WINDOW_SIZE: [u32; 2] = [1280, 800];
 
 pub(super) const RESOLUTION_PRESETS: [([u32; 2], &str); 12] = [
@@ -77,9 +81,11 @@ impl Default for GraphicsSettings {
 }
 
 impl GraphicsSettings {
+    /// Reads saved settings, using `default_resolution` when none is saved.
     pub(super) fn load(
         console: &ConsoleCommands,
         renderer_override: Option<RendererSettings>,
+        default_resolution: [u32; 2],
     ) -> Self {
         let defaults = Self::default();
         let mut renderer = defaults.renderer;
@@ -136,7 +142,7 @@ impl GraphicsSettings {
             .and_then(|value| dimension(&value));
         let classic = DisplaySettings::for_mode(RendererMode::Classic);
         Self {
-            resolution: resolution(width, height).unwrap_or(defaults.resolution),
+            resolution: resolution(width, height).unwrap_or(default_resolution),
             window_size: resolution(window_width, window_height).unwrap_or(defaults.window_size),
             renderer,
             color_depth: config(console, CLASSIC_SECTION, "ColorMode", "ColorDepth")

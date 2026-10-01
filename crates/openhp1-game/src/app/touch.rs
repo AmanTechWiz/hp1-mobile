@@ -25,7 +25,7 @@ const FULL_SIZE_HEIGHT: f32 = 400.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Button {
-    Menu,
+    Pause,
     Jump,
     Cast,
     Boost,
@@ -33,11 +33,22 @@ enum Button {
 }
 
 impl Button {
-    const ALL: [Self; 5] = [Self::Menu, Self::Jump, Self::Cast, Self::Boost, Self::Brake];
+    const ALL: [Self; 5] = [
+        Self::Pause,
+        Self::Jump,
+        Self::Cast,
+        Self::Boost,
+        Self::Brake,
+    ];
+
+    /// Boost and Brake only act on the broom.
+    fn broom_only(self) -> bool {
+        matches!(self, Self::Boost | Self::Brake)
+    }
 
     fn label(self) -> &'static str {
         match self {
-            Self::Menu => "Menu",
+            Self::Pause => "",
             Self::Jump => "Jump",
             Self::Cast => "Cast",
             Self::Boost => "Boost",
@@ -47,7 +58,7 @@ impl Button {
 
     fn set(self, input: &mut InputState, state: ElementState) {
         match self {
-            Self::Menu => {}
+            Self::Pause => {}
             Self::Jump => input.set_key(KeyCode::Space, state),
             Self::Cast => input.set_mouse_button(MouseButton::Left, state),
             Self::Boost => input.set_key(KeyCode::KeyZ, state),
@@ -94,7 +105,7 @@ impl Layout {
     fn radius(&self, button: Button) -> f32 {
         match button {
             Button::Jump | Button::Cast => 38.0 * self.unit,
-            Button::Menu | Button::Boost | Button::Brake => 28.0 * self.unit,
+            Button::Pause | Button::Boost | Button::Brake => 28.0 * self.unit,
         }
     }
 
@@ -106,9 +117,10 @@ impl Layout {
             self.area.max.y - margin - large,
         );
         match button {
-            Button::Menu => {
-                let inset = margin + self.radius(Button::Menu);
-                self.area.min + Vec2::splat(inset)
+            // Top right: the original HUD draws Harry's health in the top left.
+            Button::Pause => {
+                let inset = margin + self.radius(Button::Pause);
+                Pos2::new(self.area.max.x - inset, self.area.min.y + inset)
             }
             Button::Jump => jump,
             Button::Cast => jump - Vec2::new(large * 2.5, 0.0),
@@ -117,9 +129,8 @@ impl Layout {
         }
     }
 
-    fn button_at(&self, position: Pos2) -> Option<Button> {
-        Button::ALL
-            .into_iter()
+    fn button_at(&self, position: Pos2, broom: bool) -> Option<Button> {
+        visible_buttons(broom)
             .find(|button| position.distance(self.center(*button)) <= self.radius(*button) * 1.25)
     }
 }
@@ -133,13 +144,21 @@ enum Role {
 
 pub(super) struct TouchControls {
     enabled: bool,
+    broom: bool,
     touches: Vec<(u64, Role)>,
+}
+
+fn visible_buttons(broom: bool) -> impl Iterator<Item = Button> {
+    Button::ALL
+        .into_iter()
+        .filter(move |button| broom || !button.broom_only())
 }
 
 impl TouchControls {
     pub(super) fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            broom: false,
             touches: Vec::new(),
         }
     }
@@ -148,7 +167,12 @@ impl TouchControls {
         self.enabled
     }
 
-    /// Applies one touch to `input`, returning whether the menu was requested.
+    /// Shows the broom-only buttons while Harry flies.
+    pub(super) fn set_broom(&mut self, broom: bool) {
+        self.broom = broom;
+    }
+
+    /// Applies one touch to `input`, returning whether pausing was requested.
     pub(super) fn handle(
         &mut self,
         touch: &Touch,
@@ -159,8 +183,8 @@ impl TouchControls {
         let existing = self.touches.iter().position(|(id, _)| *id == touch.id);
         match (touch.phase, existing) {
             (TouchPhase::Started, None) => {
-                let role = if let Some(button) = layout.button_at(position) {
-                    if button == Button::Menu {
+                let role = if let Some(button) = layout.button_at(position, self.broom) {
+                    if button == Button::Pause {
                         return true;
                     }
                     button.set(input, ElementState::Pressed);
@@ -265,7 +289,7 @@ impl TouchControls {
             stroke,
         );
 
-        for button in Button::ALL {
+        for button in visible_buttons(self.broom) {
             let center = to_screen(layout.center(button));
             let radius = layout.radius(button) * scale;
             let fill = if self.held(button) {
@@ -274,6 +298,20 @@ impl TouchControls {
                 Color32::from_black_alpha(70)
             };
             painter.circle(center, radius, fill, stroke);
+            if button == Button::Pause {
+                let bar = Vec2::new(radius * 0.16, radius * 0.5);
+                for side in [-1.0, 1.0] {
+                    painter.rect_filled(
+                        Rect::from_center_size(
+                            center + Vec2::new(side * radius * 0.2, 0.0),
+                            bar * 2.0,
+                        ),
+                        radius * 0.05,
+                        Color32::from_white_alpha(220),
+                    );
+                }
+                continue;
+            }
             painter.text(
                 center,
                 Align2::CENTER_CENTER,
@@ -403,8 +441,24 @@ mod tests {
         controls.handle(&touch(1, TouchPhase::Cancelled, jump), &layout, &mut input);
         assert!(!input.keys.contains(&KeyCode::Space) && input.space_release_requested);
 
-        let menu = layout.center(Button::Menu);
-        assert!(controls.handle(&touch(3, TouchPhase::Started, menu), &layout, &mut input));
+        let pause = layout.center(Button::Pause);
+        assert!(controls.handle(&touch(3, TouchPhase::Started, pause), &layout, &mut input));
+    }
+
+    #[test]
+    fn broom_buttons_only_respond_while_flying() {
+        let layout = layout();
+        let mut controls = TouchControls::new(true);
+        let mut input = InputState::default();
+        let boost = layout.center(Button::Boost);
+
+        controls.handle(&touch(1, TouchPhase::Started, boost), &layout, &mut input);
+        assert!(!input.keys.contains(&KeyCode::KeyZ));
+        controls.handle(&touch(1, TouchPhase::Ended, boost), &layout, &mut input);
+
+        controls.set_broom(true);
+        controls.handle(&touch(2, TouchPhase::Started, boost), &layout, &mut input);
+        assert!(input.keys.contains(&KeyCode::KeyZ));
     }
 
     #[test]
