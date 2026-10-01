@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="OpenHP1" />
+    <meta name="theme-color" content="#000000" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <title>OpenHP1</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        color: #eee;
+        overscroll-behavior: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #openhp1-canvas {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        display: block;
+        outline: none;
+        touch-action: none;
+      }
+      #overlay {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+          max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+        background: #0b0b10;
+        overflow-y: auto;
+      }
+      body.playing #overlay {
+        display: none;
+      }
+      main {
+        max-width: 34rem;
+        width: 100%;
+      }
+      h1 {
+        margin: 0 0 0.25rem;
+        font-size: 1.6rem;
+      }
+      p {
+        line-height: 1.45;
+        color: #bbb;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+        margin: 1rem 0;
+      }
+      button,
+      label.button {
+        font: inherit;
+        padding: 0.7rem 1.1rem;
+        border-radius: 0.6rem;
+        border: 1px solid #444;
+        background: #1d1d26;
+        color: #eee;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      #play {
+        background: #6d4cc2;
+        border-color: #6d4cc2;
+        font-weight: 600;
+      }
+      label.button input {
+        display: none;
+      }
+      .secondary button {
+        font-size: 0.85rem;
+        padding: 0.45rem 0.8rem;
+        background: transparent;
+      }
+      progress {
+        width: 100%;
+        height: 0.6rem;
+        accent-color: #6d4cc2;
+      }
+      .notice {
+        font-size: 0.8rem;
+        color: #888;
+      }
+      .warning {
+        color: #f3c969;
+      }
+      #error-text {
+        white-space: pre-wrap;
+        color: #ff8a8a;
+        font-family: ui-monospace, monospace;
+        font-size: 0.85rem;
+      }
+      @media (orientation: portrait) {
+        body.playing::after {
+          content: "Rotate your device to landscape for the best view.";
+          position: fixed;
+          left: 0;
+          right: 0;
+          bottom: env(safe-area-inset-bottom);
+          padding: 0.4rem;
+          text-align: center;
+          font-size: 0.8rem;
+          background: rgba(0, 0, 0, 0.6);
+          pointer-events: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="openhp1-canvas" tabindex="0"></canvas>
+    <div id="overlay">
+      <main>
+        <h1>OpenHP1</h1>
+        <p>
+          An open-source reimplementation of Harry Potter and the Philosopher's Stone (PC). It runs
+          from your own copy of the original game. Imported files stay in this browser and are
+          never uploaded.
+        </p>
+        <p id="webgpu" class="warning" hidden>
+          This browser does not provide WebGPU. On iPhone and iPad, use Safari on iOS 26 or later.
+        </p>
+
+        <section id="setup">
+          <p id="installation">Checking for imported game files…</p>
+          <div class="actions">
+            <button id="play" disabled>Play</button>
+            <label class="button">
+              Import ZIP
+              <input id="zip-input" type="file" accept=".zip,application/zip" />
+            </label>
+            <label class="button">
+              Import folder
+              <input id="folder-input" type="file" webkitdirectory multiple />
+            </label>
+          </div>
+          <p class="notice">
+            Import the installed game folder (the one containing <code>System</code>,
+            <code>Maps</code>, and <code>Textures</code>). On iPhone, put a ZIP of that folder in
+            the Files app first: long-press the folder and choose Compress, or create the ZIP on
+            a computer. Add this page to your Home Screen to play full screen.
+          </p>
+          <div class="actions secondary">
+            <button id="remove" disabled>Remove game files</button>
+            <button id="reset">Delete settings and saves</button>
+          </div>
+        </section>
+
+        <section id="progress" hidden>
+          <p id="progress-text"></p>
+          <progress id="progress-bar"></progress>
+        </section>
+
+        <section id="error" hidden>
+          <p id="error-text"></p>
+          <div class="actions"><button id="reload">Reload</button></div>
+        </section>
+
+        <p class="notice">
+          OpenHP1 is not affiliated with or endorsed by Warner Bros., Electronic Arts, or
+          KnowWonder. Harry Potter is a trademark of Warner Bros. Entertainment Inc.
+        </p>
+      </main>
+    </div>
+    <script type="module" src="host.js"></script>
+  </body>
+</html>

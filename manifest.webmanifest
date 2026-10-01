@@ -1,0 +1,11 @@
+{
+  "name": "OpenHP1",
+  "short_name": "OpenHP1",
+  "description": "Open-source reimplementation of Harry Potter and the Philosopher's Stone (PC), played from your own game files.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#000000",
+  "theme_color": "#000000"
+}
