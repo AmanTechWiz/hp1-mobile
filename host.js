@@ -13,6 +13,8 @@ const SETTINGS_DIR = "/settings";
 const PREFIX_BYTES = 16;
 // Small text files are read often, so they stay resident.
 const RESIDENT_BYTES = 256 * 1024;
+// How long a reload waits for pending IndexedDB writes before giving up.
+const FLUSH_TIMEOUT_MS = 2000;
 
 const element = (id) => document.getElementById(id);
 
@@ -273,7 +275,17 @@ class Host {
     this.stored = stored;
     this.resident = new Map();
     this.prefixes = new Map();
-    this.writes = Promise.resolve();
+    // IndexedDB transactions that are dispatched but not settled yet. The
+    // browser runs overlapping readwrite transactions on one store in creation
+    // order, so dispatching each write when it arrives preserves write order
+    // without a queue that could strand a save behind the tab closing.
+    this.writes = new Set();
+    // Writes the browser refused; their bytes exist only in wasm memory, so
+    // they are lost as soon as the page reloads.
+    this.failed = new Map();
+    // One counter per path: a write that fails after a newer write for the
+    // same path was dispatched must not report over the newer write's state.
+    this.generation = new Map();
   }
 
   async prepare(progress) {
@@ -333,14 +345,76 @@ class Host {
       this.resident.delete(path);
       this.prefixes.delete(path);
     }
+    this.generation.set(path, (this.generation.get(path) ?? 0) + 1);
+    this.failed.delete(path);
+    this.dispatch(path);
+    updateStorageWarning(this);
+  }
+
+  // Starts one IndexedDB transaction. The put/delete is issued before this
+  // returns, so an unload that follows immediately cannot outrun it: with the
+  // old promise chain the transaction only began after every earlier write had
+  // committed, and a reload or tab close in that window silently dropped it.
+  dispatch(path) {
+    const generation = this.generation.get(path) ?? 0;
     const blob = this.stored.get(path);
-    this.writes = this.writes
-      .then(() =>
-        transaction(this.db, "readwrite", (store) =>
-          blob ? store.put(blob, path) : store.delete(path),
-        ),
-      )
-      .catch((error) => console.error(`Could not persist ${path}`, error));
+    let committed;
+    try {
+      committed = transaction(this.db, "readwrite", (store) =>
+        blob ? store.put(blob, path) : store.delete(path),
+      );
+    } catch (error) {
+      this.recordFailure(path, generation, error);
+      return;
+    }
+    const tracked = committed.then(
+      () => this.writes.delete(tracked),
+      (error) => {
+        this.writes.delete(tracked);
+        this.recordFailure(path, generation, error);
+      },
+    );
+    this.writes.add(tracked);
+  }
+
+  recordFailure(path, generation, error) {
+    if ((this.generation.get(path) ?? 0) !== generation) {
+      // A newer write for this path decides whether the file is stored.
+      return;
+    }
+    console.error(`Could not persist ${path}`, error);
+    this.failed.set(path, error);
+    updateStorageWarning(this);
+  }
+
+  // Re-dispatches refused writes. pagehide can start a transaction even
+  // though it cannot wait for one, so this is a last chance for writes that
+  // failed for a transient reason.
+  retryFailed() {
+    for (const path of [...this.failed.keys()]) {
+      this.failed.delete(path);
+      this.dispatch(path);
+    }
+    updateStorageWarning(this);
+  }
+
+  // Waits until every dispatched write has committed or failed. Failures
+  // settle the promise too, so this always resolves.
+  async flush() {
+    while (this.writes.size > 0) {
+      await Promise.all([...this.writes]);
+    }
+  }
+
+  hasPendingWrites() {
+    return this.writes.size > 0;
+  }
+
+  // The persistence state the wasm build could query through
+  // `openhp1Host.storageStatus()`. Nothing in Rust reads it yet; the page uses
+  // it for the on-screen storage warning.
+  storageStatus() {
+    return { pending: this.writes.size, failed: [...this.failed.keys()] };
   }
 
   status(message) {
@@ -361,7 +435,14 @@ class Host {
     showError(message);
   }
 
-  exited() {
+  async exited() {
+    // The wasm build ignores the return value, so waiting here only delays
+    // the reload. Give in-flight writes a bounded window to commit; a stuck
+    // transaction must not hang the exit forever.
+    await Promise.race([
+      this.flush(),
+      new Promise((resolve) => setTimeout(resolve, FLUSH_TIMEOUT_MS)),
+    ]);
     location.reload();
   }
 }
@@ -421,6 +502,37 @@ function showError(message) {
   element("error-text").textContent = message;
 }
 
+// IndexedDB refusing a write never reaches the wasm build: `persist` returns
+// nothing (web.rs declares `host_persist` without `catch`), and an exception
+// thrown here would unwind through wasm instead of reaching Rust's error
+// handling. So a refused write is shown on the page itself, where the player
+// can see that their save is only in memory.
+let storageWarning = null;
+
+function updateStorageWarning(host) {
+  const failed = [...host.failed.keys()];
+  if (failed.length === 0) {
+    storageWarning?.remove();
+    storageWarning = null;
+    return;
+  }
+  if (!storageWarning) {
+    storageWarning = document.createElement("p");
+    storageWarning.id = "storage-warning";
+    storageWarning.style.cssText =
+      "position:fixed; z-index:1; top:0; left:0; right:0; margin:0; " +
+      "padding:0.5rem 0.75rem calc(0.5rem + env(safe-area-inset-top)); " +
+      "text-align:center; font-size:0.8rem; line-height:1.4; " +
+      "background:#5b1d1d; color:#ffd9d9; cursor:default;";
+    document.body.appendChild(storageWarning);
+  }
+  const shown = failed.slice(0, 3).join(", ");
+  const more = failed.length > 3 ? ` and ${failed.length - 3} more` : "";
+  storageWarning.textContent =
+    `Browser storage refused ${shown}${more}. These files are only in memory: ` +
+    "they will be lost when the page closes, and saving again may fail too.";
+}
+
 function formatBytes(bytes) {
   const units = ["B", "KB", "MB", "GB"];
   let unit = 0;
@@ -464,6 +576,23 @@ async function start(db) {
 async function main() {
   installAudioUnlock();
   document.addEventListener("gesturestart", (event) => event.preventDefault());
+
+  // Closing or reloading the page cannot await queued IndexedDB writes, but
+  // the browser keeps the page (and its in-flight transactions) alive while a
+  // beforeunload dialog is open, so hold the unload only while a write is
+  // actually pending. pagehide gets one last synchronous dispatch for writes
+  // that were refused earlier.
+  window.addEventListener("beforeunload", (event) => {
+    if (window.openhp1Host?.hasPendingWrites()) {
+      event.preventDefault();
+    }
+  });
+  window.addEventListener("pagehide", () => {
+    window.openhp1Host?.retryFailed();
+    if (window.openhp1Host?.hasPendingWrites()) {
+      console.warn("Leaving the page with writes pending", window.openhp1Host.storageStatus());
+    }
+  });
   if (!navigator.gpu) {
     element("webgpu").hidden = false;
   }
@@ -516,7 +645,18 @@ async function main() {
     await describeInstallation(db);
   });
   element("play").addEventListener("click", async () => start(await database));
-  element("reload").addEventListener("click", () => location.reload());
+  element("reload").addEventListener("click", async () => {
+    // A reload from this button is user-initiated, so let pending writes
+    // commit first instead of racing them against the page teardown.
+    const host = window.openhp1Host;
+    if (host) {
+      await Promise.race([
+        host.flush(),
+        new Promise((resolve) => setTimeout(resolve, FLUSH_TIMEOUT_MS)),
+      ]);
+    }
+    location.reload();
+  });
   await describeInstallation(await database);
 }
 
