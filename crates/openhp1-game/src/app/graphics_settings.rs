@@ -20,7 +20,7 @@ pub(super) const DEFAULT_RESOLUTION: [u32; 2] = [1024, 768];
 pub(super) const TOUCH_DEFAULT_RESOLUTION: [u32; 2] = [1280, 720];
 pub(super) const DEFAULT_WINDOW_SIZE: [u32; 2] = [1280, 800];
 
-pub(super) const RESOLUTION_PRESETS: [([u32; 2], &str); 12] = [
+pub(super) const RESOLUTION_PRESETS: [([u32; 2], &str); 17] = [
     ([512, 384], "512x384 (Classic)"),
     ([640, 480], "640x480 (Classic)"),
     ([800, 600], "800x600 (Classic)"),
@@ -33,6 +33,11 @@ pub(super) const RESOLUTION_PRESETS: [([u32; 2], &str); 12] = [
     ([1920, 1080], "1920x1080 (Widescreen)"),
     ([2560, 1440], "2560x1440 (Widescreen)"),
     ([3840, 2160], "3840x2160 (Widescreen)"),
+    ([1280, 800], "1280x800 (16:10)"),
+    ([1920, 1200], "1920x1200 (16:10)"),
+    ([2560, 1600], "2560x1600 (16:10)"),
+    ([2560, 1080], "2560x1080 (Ultrawide 21:9)"),
+    ([3440, 1440], "3440x1440 (Ultrawide 21:9)"),
 ];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -503,7 +508,11 @@ mod tests {
         sizes.sort_unstable();
         assert!(sizes.windows(2).all(|pair| pair[0] != pair[1]));
         assert!(RESOLUTION_PRESETS.iter().all(|([width, height], label)| {
-            (width * 3 == height * 4 || width * 9 == height * 16) && label.contains('x')
+            let ratios = [(4, 3), (16, 9), (16, 10), (64, 27), (43, 18)];
+            ratios
+                .iter()
+                .any(|(w, h)| width * h / w == *height || width * h / w + 1 == *height)
+                && label.contains('x')
         }));
     }
 }
