@@ -625,6 +625,7 @@ pub(super) struct GameUi {
     story_event: Option<String>,
     story_sound_at: Option<Instant>,
     story_deadline: Option<Instant>,
+    story_skip: bool,
     card_descriptions: HashMap<i32, String>,
     harry_card_objective: String,
     textures: UiTextures,
@@ -1260,6 +1261,7 @@ impl GameUi {
             story_event: None,
             story_sound_at: None,
             story_deadline: None,
+            story_skip: false,
             card_descriptions,
             harry_card_objective,
             textures,
@@ -1311,6 +1313,7 @@ impl GameUi {
         self.story_sound_at = None;
         self.story_slot = None;
         self.story_event = None;
+        self.story_skip = false;
         self.page = Page::Main;
         self.open_combo = None;
         false
@@ -1669,6 +1672,7 @@ impl GameUi {
         self.story_index = None;
         self.story_slot = Some(slot);
         self.story_event = None;
+        self.story_skip = false;
         self.page = Page::StoryBook;
         self.music = Some(MenuMusic::StoryBook);
         let page = &self.story_pages[0];
@@ -1690,6 +1694,7 @@ impl GameUi {
         self.story_index = Some(story);
         self.story_slot = None;
         self.story_event = Some(event_when_done);
+        self.story_skip = false;
         if pages.is_empty() {
             self.story_pages.clear();
             self.story_sound_at = None;
@@ -1740,6 +1745,16 @@ impl GameUi {
 
     fn storybook_page(&mut self, ui: &mut egui::Ui, scale: f32) {
         let now = Instant::now();
+        // A requested skip lets the timer branch fire every frame instead of
+        // jumping `story_page`: one real `advance_story` per frame keeps card
+        // awards, sounds, and terminal actions on their authored paths.
+        if story_fast_forwards(
+            self.story_skip,
+            self.story_slot,
+            self.story_event.as_deref(),
+        ) {
+            self.story_deadline = Some(now);
+        }
         if self.story_deadline.is_some_and(|deadline| now >= deadline) {
             self.advance_story();
         } else if self.story_sound_at.is_some_and(|sound_at| now >= sound_at) {
@@ -1777,6 +1792,33 @@ impl GameUi {
         );
         if self.story_index == Some(16) {
             draw_credits(ui, scale);
+        }
+        self.storybook_controls(ui, scale);
+    }
+
+    fn storybook_controls(&mut self, ui: &mut egui::Ui, scale: f32) {
+        // The storybook has no click targets of its own, so a tap or click
+        // anywhere turns the page now and Enter does the same, mirroring the
+        // cutscene skip key for desktop players.
+        let origin = ui.min_rect().min;
+        let turn = ui.interact(
+            scaled_rect(origin, scale, 0.0, 0.0, REFERENCE_SIZE.x, REFERENCE_SIZE.y),
+            Id::new("storybook page"),
+            Sense::click(),
+        );
+        if turn.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        // Keys are ignored while another widget has focus, so typing in the
+        // debug console cannot turn storybook pages.
+        let key = !ui.ctx().egui_wants_keyboard_input()
+            && ui.input(|input| {
+                input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
+            });
+        if self.gameplay.skip_buttons && menu_button(ui, scale, 500.0, 8.0, "Skip") {
+            self.story_skip = true;
+        } else if turn.clicked() || key {
+            self.advance_story();
         }
     }
 
@@ -3392,6 +3434,17 @@ fn end_game_story_advance(page: usize, beans: i32, cards: u8) -> (usize, bool) {
     }
 }
 
+/// A requested skip fast-forwards only while a terminal action is still
+/// pending, so the book stops on its authored end state instead of running
+/// past it.
+fn story_fast_forwards(
+    story_skip: bool,
+    story_slot: Option<u32>,
+    story_event: Option<&str>,
+) -> bool {
+    story_skip && (story_slot.is_some() || story_event.is_some())
+}
+
 fn draw_credits(ui: &egui::Ui, scale: f32) {
     let font = FontId::proportional(14.0 * scale);
     let line_height = ui
@@ -4096,6 +4149,16 @@ mod tests {
         assert_eq!(end_game_story_advance(2, 250, 23), (4, false));
         assert_eq!(end_game_story_advance(2, 250, 24), (1, true));
         assert_eq!(end_game_story_advance(3, 0, 0), (1, false));
+    }
+
+    #[test]
+    fn storybook_skip_stops_once_its_terminal_action_is_spent() {
+        // Both the new-game story and an interlude fast-forward to the end.
+        assert!(story_fast_forwards(true, Some(3), None));
+        assert!(story_fast_forwards(true, None, Some("StoryDone")));
+        // No skip requested, or the terminal action already resolved.
+        assert!(!story_fast_forwards(false, Some(3), None));
+        assert!(!story_fast_forwards(true, None, None));
     }
 
     #[test]

@@ -14,7 +14,8 @@ pub(super) struct GameplaySettings {
     pub(super) auto_learn_spells: bool,
     pub(super) instant_pickup_wizard_cards: bool,
     /// Shows Skip buttons for cutscenes and storybooks. The retail game only
-    /// allows storybook skipping in debug mode.
+    /// allows storybook skipping in debug mode; turning a storybook page early
+    /// with a click or Enter is always available.
     pub(super) skip_buttons: bool,
 }
 
