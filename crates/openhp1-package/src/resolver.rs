@@ -131,7 +131,7 @@ fn validate_game_root(
     settings_dir: &Path,
     language: Option<&str>,
 ) -> Result<GameInstallation, GameInstallationError> {
-    if !root.is_absolute() {
+    if !fs::is_absolute(root) {
         return Err(GameInstallationError::InvalidRoot {
             root: root.to_path_buf(),
             reason: "OpenHP1.ini requires an absolute path".to_owned(),

@@ -24,6 +24,18 @@ pub use std::fs::{
 #[cfg(target_arch = "wasm32")]
 pub use memory::{DirEntry, FileType, Metadata, ReadDir};
 
+/// Whether `path` is absolute on the filesystem used by this target.
+///
+/// `Path::is_absolute` treats every path as relative on wasm32-unknown-unknown,
+/// but the mounted browser filesystem is rooted at `/`.
+pub fn is_absolute(path: &std::path::Path) -> bool {
+    if cfg!(target_arch = "wasm32") {
+        path.has_root()
+    } else {
+        path.is_absolute()
+    }
+}
+
 /// Reads at most `len` bytes from the start of a file.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_prefix(path: impl AsRef<std::path::Path>, len: usize) -> std::io::Result<Vec<u8>> {
