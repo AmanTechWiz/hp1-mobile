@@ -25,8 +25,8 @@ use web_time::Instant;
 use wgpu::{CurrentSurfaceTexture, SurfaceConfiguration};
 use winit::{
     application::ApplicationHandler,
-    dpi::{LogicalSize, PhysicalSize, Size},
-    event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent},
+    dpi::PhysicalSize,
+    event::{DeviceEvent, DeviceId, ElementState, MouseButton, Touch, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow},
     keyboard::{Key, KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowAttributes, WindowId},
@@ -35,8 +35,9 @@ use winit::{
 use self::{
     console::DeveloperConsole,
     gameplay_settings::GameplaySettings,
-    graphics_settings::{ColorDepth, GraphicsSettings, RESOLUTION_PRESETS, window_size},
+    graphics_settings::{ColorDepth, GraphicsSettings, RESOLUTION_PRESETS},
     presentation::Presentation,
+    touch::TouchControls,
     ui::GameUi,
 };
 
@@ -44,6 +45,7 @@ mod console;
 mod gameplay_settings;
 mod graphics_settings;
 mod presentation;
+mod touch;
 mod ui;
 
 const ROTATOR_RADIANS: f32 = TAU / 65_536.0;
@@ -66,6 +68,40 @@ impl GameApp {
             next_redraw: None,
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn window_attributes(scene: &LoadedScene) -> WindowAttributes {
+    use winit::dpi::{LogicalSize, Size};
+
+    let window_size = graphics_settings::window_size(scene);
+    WindowAttributes::default()
+        .with_title("OpenHP1")
+        .with_inner_size(Size::Logical(LogicalSize::new(
+            f64::from(window_size[0]),
+            f64::from(window_size[1]),
+        )))
+}
+
+/// The page sizes its canvas with CSS, so web builds keep the page layout.
+#[cfg(target_arch = "wasm32")]
+fn window_attributes(_scene: &LoadedScene) -> WindowAttributes {
+    use winit::platform::web::WindowAttributesExtWebSys;
+
+    WindowAttributes::default()
+        .with_title("OpenHP1")
+        .with_canvas(crate::web::canvas())
+}
+
+/// Whether gameplay is steered through on-screen touch controls.
+#[cfg(target_arch = "wasm32")]
+fn touch_screen() -> bool {
+    crate::web::touch_screen()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn touch_screen() -> bool {
+    false
 }
 
 fn next_redraw_deadline(frame_started: Instant, now: Instant) -> Instant {
@@ -92,15 +128,8 @@ impl ApplicationHandler for GameApp {
         let Some(scene) = self.scene.take() else {
             return;
         };
-        let window_size = window_size(&scene);
-        let attributes = WindowAttributes::default()
-            .with_title("OpenHP1")
-            .with_inner_size(Size::Logical(LogicalSize::new(
-                f64::from(window_size[0]),
-                f64::from(window_size[1]),
-            )));
         let result = event_loop
-            .create_window(attributes)
+            .create_window(window_attributes(&scene))
             .context("failed to create the game window")
             .and_then(|window| {
                 Graphics::new(Arc::new(window), scene, self.renderer_override.take())
@@ -266,6 +295,12 @@ impl ApplicationHandler for GameApp {
             }
             return;
         }
+        if let WindowEvent::Touch(touch) = &event
+            && graphics.touch.enabled()
+        {
+            graphics.touch_input(touch);
+            return;
+        }
         if let WindowEvent::MouseInput { state, button, .. } = &event
             && graphics.input.captured
         {
@@ -311,6 +346,12 @@ impl ApplicationHandler for GameApp {
             }
             _ => {}
         }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // A page cannot close itself, so return to the browser launcher.
+        #[cfg(target_arch = "wasm32")]
+        crate::web::exited();
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -528,6 +569,7 @@ struct Graphics {
     audio: Option<AudioPlayer>,
     player: usize,
     input: InputState,
+    touch: TouchControls,
     last_frame: Instant,
     last_error: Option<String>,
     deferred_calls: usize,
@@ -552,6 +594,44 @@ struct Graphics {
     graphics_settings: GraphicsSettings,
     display_settings: DisplaySettings,
     screen_flash: [f32; 4],
+}
+
+type GraphicsDevice = (
+    wgpu::Surface<'static>,
+    wgpu::Adapter,
+    wgpu::Device,
+    wgpu::Queue,
+);
+
+#[cfg(not(target_arch = "wasm32"))]
+fn graphics_device(window: &Arc<Window>) -> Result<GraphicsDevice> {
+    let instance = wgpu::Instance::default();
+    let surface = instance
+        .create_surface(Arc::clone(window))
+        .context("failed to create the game render surface")?;
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        compatible_surface: Some(&surface),
+        ..Default::default()
+    }))
+    .context("failed to find a compatible graphics adapter")?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("OpenHP1 game device"),
+        ..Default::default()
+    }))
+    .context("failed to create the graphics device")?;
+    Ok((surface, adapter, device, queue))
+}
+
+/// Browsers only create devices asynchronously, so web builds share the
+/// device requested before the event loop started.
+#[cfg(target_arch = "wasm32")]
+fn graphics_device(window: &Arc<Window>) -> Result<GraphicsDevice> {
+    let gpu = crate::web::gpu().context("the WebGPU device was not initialized")?;
+    let surface = gpu
+        .instance
+        .create_surface(Arc::clone(window))
+        .context("failed to create the game render surface")?;
+    Ok((surface, gpu.adapter, gpu.device, gpu.queue))
 }
 
 fn initialize_saved_runtime(
@@ -743,20 +823,7 @@ impl Graphics {
         scene.sync_weapon_attachments(runtime.weapon_attachments()?)?;
 
         let size = nonzero_size(window.inner_size());
-        let instance = wgpu::Instance::default();
-        let surface = instance
-            .create_surface(Arc::clone(&window))
-            .context("failed to create the game render surface")?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))
-        .context("failed to find a compatible graphics adapter")?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("OpenHP1 game device"),
-            ..Default::default()
-        }))
-        .context("failed to create the graphics device")?;
+        let (surface, adapter, device, queue) = graphics_device(&window)?;
         let mut config = surface
             .get_default_config(&adapter, size.width, size.height)
             .context("the graphics adapter does not support this surface")?;
@@ -824,6 +891,7 @@ impl Graphics {
             audio,
             player,
             input: InputState::default(),
+            touch: TouchControls::new(touch_screen()),
             last_frame: Instant::now(),
             last_error,
             deferred_calls,
@@ -868,6 +936,11 @@ impl Graphics {
     }
 
     fn capture_input(&mut self) {
+        if self.touch.enabled() {
+            // Touch screens steer through on-screen controls, not a captured cursor.
+            self.input.captured = true;
+            return;
+        }
         let result = self
             .window
             .set_cursor_grab(CursorGrabMode::Locked)
@@ -891,11 +964,34 @@ impl Graphics {
 
     fn release_input(&mut self) {
         self.input.clear();
-        if let Err(error) = self.window.set_cursor_grab(CursorGrabMode::None) {
-            self.last_error = Some(format!("could not release the mouse: {error}"));
+        self.touch.release();
+        if !self.touch.enabled() {
+            if let Err(error) = self.window.set_cursor_grab(CursorGrabMode::None) {
+                self.last_error = Some(format!("could not release the mouse: {error}"));
+            }
+            self.window.set_cursor_visible(true);
         }
-        self.window.set_cursor_visible(true);
         self.input.captured = false;
+    }
+
+    fn touch_layout(&self) -> touch::Layout {
+        let destination = presentation::fit(
+            self.presentation.size(),
+            [self.config.width, self.config.height],
+        );
+        let area = egui::Rect::from_min_size(
+            egui::pos2(destination.x as f32, destination.y as f32),
+            egui::vec2(destination.width as f32, destination.height as f32),
+        );
+        touch::Layout::new(area, self.window.scale_factor() as f32)
+    }
+
+    fn touch_input(&mut self, touch: &Touch) {
+        let layout = self.touch_layout();
+        if self.touch.handle(touch, &layout, &mut self.input) {
+            self.release_input();
+            self.game_ui.open_pause();
+        }
     }
 
     fn render(&mut self) -> RenderOutcome {
@@ -1024,8 +1120,14 @@ impl Graphics {
             [self.config.width, self.config.height],
             self.window.scale_factor() as f32,
         );
+        let touch_layout =
+            (self.touch.enabled() && !self.game_ui.is_open() && !self.debug_console.is_open())
+                .then(|| self.touch_layout());
         let egui_output = egui_context.run_ui(egui_input, |ui| {
             self.game_ui.ui(ui.ctx());
+            if let Some(layout) = &touch_layout {
+                self.touch.paint(ui.ctx(), layout);
+            }
             self.debug_overlay(ui.ctx());
             self.debug_console.ui(ui);
         });
@@ -1919,6 +2021,11 @@ fn prepare_screenshots(
     directory: &Path,
     snapshots: Vec<Option<u32>>,
 ) -> Result<Vec<ScreenshotReadback>> {
+    // Saving waits on a GPU readback, which a browser's main thread cannot block on.
+    #[cfg(target_arch = "wasm32")]
+    if !snapshots.is_empty() {
+        anyhow::bail!("screenshots are not available in the browser");
+    }
     let bgra = match format.remove_srgb_suffix() {
         wgpu::TextureFormat::Bgra8Unorm => true,
         wgpu::TextureFormat::Rgba8Unorm => false,

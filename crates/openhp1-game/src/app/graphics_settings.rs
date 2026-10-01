@@ -4,7 +4,6 @@ use openhp1_render::{
     AmbientOcclusion, DisplaySettings, RendererMode, RendererSettings, ToneMapper,
 };
 use openhp1_runtime::ConsoleCommands;
-use openhp1_scene::LoadedScene;
 
 const CONFIG: &str = "OpenHP1";
 const RENDERER_SECTION: &str = "OpenHP1.Renderer";
@@ -277,7 +276,8 @@ impl GraphicsSettings {
     }
 }
 
-pub(super) fn window_size(scene: &LoadedScene) -> [u32; 2] {
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn window_size(scene: &openhp1_scene::LoadedScene) -> [u32; 2] {
     let width = scene
         .config_value_in(CONFIG, RENDERER_SECTION, "WindowSizeX")
         .and_then(|value| dimension(&value));

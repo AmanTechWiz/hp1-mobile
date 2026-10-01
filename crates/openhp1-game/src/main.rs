@@ -1,5 +1,8 @@
 mod app;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::{
     env,
     ffi::OsString,
@@ -8,16 +11,29 @@ use std::{
     sync::Mutex,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 use anyhow::{Context, Result, bail};
+#[cfg(not(target_arch = "wasm32"))]
 use app::GameApp;
+#[cfg(not(target_arch = "wasm32"))]
 use openhp1_package::{resolve_game_installation, settings_dir};
+#[cfg(not(target_arch = "wasm32"))]
 use openhp1_render::RendererSettings;
 use openhp1_scene::LoadedScene;
 use tracing::{info, warn};
+#[cfg(not(target_arch = "wasm32"))]
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
+#[cfg(not(target_arch = "wasm32"))]
 use web_time::{SystemTime, UNIX_EPOCH};
+#[cfg(not(target_arch = "wasm32"))]
 use winit::event_loop::EventLoop;
 
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    web::start();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<()> {
     let log_path = init_logging()?;
     info!(path = %log_path.display(), "logging game diagnostics");
@@ -28,6 +44,13 @@ fn main() -> Result<()> {
         None => resolve_game_installation()?.startup_map().to_path_buf(),
     };
     let scene = LoadedScene::load(level)?;
+    log_scene_diagnostics(&scene);
+    let event_loop = EventLoop::new()?;
+    event_loop.run_app(&mut GameApp::new(scene, options.renderer))?;
+    Ok(())
+}
+
+fn log_scene_diagnostics(scene: &LoadedScene) {
     let diagnostics = scene
         .actors
         .iter()
@@ -52,11 +75,9 @@ fn main() -> Result<()> {
         diagnostics = diagnostics.len(),
         "loaded scene capabilities"
     );
-    let event_loop = EventLoop::new()?;
-    event_loop.run_app(&mut GameApp::new(scene, options.renderer))?;
-    Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn init_logging() -> Result<PathBuf> {
     let directory = settings_dir().join("Logs");
     fs::create_dir_all(&directory).context("could not create logs directory")?;
@@ -80,15 +101,18 @@ fn init_logging() -> Result<PathBuf> {
     Ok(path)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct Options {
     level: Option<PathBuf>,
     renderer: Option<RendererSettings>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn options() -> Result<Options> {
     options_from(env::args_os().skip(1))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn options_from(arguments: impl IntoIterator<Item = OsString>) -> Result<Options> {
     let mut options = Options {
         level: None,
