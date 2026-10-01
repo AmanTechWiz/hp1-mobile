@@ -454,6 +454,8 @@ struct InputState {
     space_requested: bool,
     space_release_requested: bool,
     jump_requested: bool,
+    /// Skip button or Enter pressed since the last frame.
+    skip_requested: bool,
     /// Analog `[right, forward]` movement from the touch stick, each in -1..=1.
     stick: [f32; 2],
     captured: bool,
@@ -465,7 +467,9 @@ impl InputState {
             ElementState::Pressed => {
                 let first_press = self.keys.insert(key);
                 if first_press {
-                    if key == KeyCode::Space {
+                    if matches!(key, KeyCode::Enter | KeyCode::NumpadEnter) {
+                        self.skip_requested = true;
+                    } else if key == KeyCode::Space {
                         self.space_requested = true;
                         self.jump_requested = true;
                     } else if matches!(key, KeyCode::ControlLeft | KeyCode::ControlRight) {
@@ -550,6 +554,7 @@ impl InputState {
         self.space_requested = false;
         self.space_release_requested = false;
         self.jump_requested = false;
+        self.skip_requested = false;
         input
     }
 
@@ -563,6 +568,7 @@ impl InputState {
         self.space_requested = false;
         self.space_release_requested = false;
         self.jump_requested = false;
+        self.skip_requested = false;
         self.stick = [0.0; 2];
     }
 }
@@ -758,7 +764,8 @@ impl Graphics {
                 settings
             }
         };
-        let gameplay_settings = GameplaySettings::load(&console);
+        // Touch screens have no keyboard to skip with, so they show Skip buttons.
+        let gameplay_settings = GameplaySettings::load(&console, touch_screen());
         if initialize_settings && let Err(error) = gameplay_settings.save(&console) {
             last_error = Some(format!("could not initialize gameplay settings: {error}"));
         }
@@ -1040,6 +1047,9 @@ impl Graphics {
         self.last_frame = now;
         self.frame_time_ms = delta_time * 1_000.0;
         let debug_fast_forward = self.input.keys.iter().copied().any(is_fast_forward_key);
+        // `player_input` clears this frame's one-shot flags, so capture the
+        // skip request before either branch consumes it.
+        let skip_requested = self.input.skip_requested;
         let mut input = if self.fly_camera_active {
             update_fly_camera(
                 &mut self.camera,
@@ -1052,9 +1062,11 @@ impl Graphics {
         } else {
             self.input.player_input(delta_time)
         };
-        if !self.gameplay_settings.jump_skips_cutscenes {
+        let skip_wanted = (self.gameplay_settings.jump_skips_cutscenes && input.jump)
+            || (self.gameplay_settings.skip_buttons && skip_requested);
+        if !self.gameplay_settings.jump_skips_cutscenes && !self.gameplay_settings.skip_buttons {
             self.cutscene_skip = CutsceneSkipState::Inactive;
-        } else if self.cutscene_skip == CutsceneSkipState::Inactive && input.jump {
+        } else if self.cutscene_skip == CutsceneSkipState::Inactive && skip_wanted {
             if self.dispatch_cutscene_skip() {
                 self.cutscene_skip = CutsceneSkipState::Cutscene;
             }
@@ -1157,6 +1169,10 @@ impl Graphics {
             [self.config.width, self.config.height],
             self.window.scale_factor() as f32,
         );
+        let cutscene = self.gameplay_settings.skip_buttons
+            && self.cutscene_skip == CutsceneSkipState::Inactive
+            && self.runtime.cutscene_active().unwrap_or(false);
+        self.touch.set_cutscene(cutscene);
         self.touch.set_broom(
             self.scene
                 .actors
@@ -2376,6 +2392,23 @@ mod tests {
         input.set_key(KeyCode::KeyZ, ElementState::Released);
         input.set_key(KeyCode::KeyX, ElementState::Pressed);
         assert!(input.player_input(1.0 / 60.0).broom_brake);
+    }
+
+    #[test]
+    fn enter_requests_a_one_shot_skip_until_player_input_consumes_it() {
+        let mut input = InputState::default();
+        input.set_key(KeyCode::Enter, ElementState::Pressed);
+        input.set_key(KeyCode::Enter, ElementState::Pressed);
+        assert!(input.skip_requested);
+        let player = input.player_input(1.0 / 60.0);
+        assert!(!player.jump);
+        assert!(!input.skip_requested);
+
+        input.set_key(KeyCode::Enter, ElementState::Released);
+        input.set_key(KeyCode::NumpadEnter, ElementState::Pressed);
+        assert!(input.skip_requested);
+        input.clear();
+        assert!(!input.skip_requested);
     }
 
     #[test]

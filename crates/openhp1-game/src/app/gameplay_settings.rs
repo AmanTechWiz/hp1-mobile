@@ -13,10 +13,14 @@ pub(super) struct GameplaySettings {
     pub(super) jump_skips_cutscenes: bool,
     pub(super) auto_learn_spells: bool,
     pub(super) instant_pickup_wizard_cards: bool,
+    /// Shows Skip buttons for cutscenes and storybooks. The retail game only
+    /// allows storybook skipping in debug mode.
+    pub(super) skip_buttons: bool,
 }
 
 impl GameplaySettings {
-    pub(super) fn load(console: &ConsoleCommands) -> Self {
+    /// Reads saved settings, using `skip_buttons_default` when none is saved.
+    pub(super) fn load(console: &ConsoleCommands, skip_buttons_default: bool) -> Self {
         let defaults = Self::default();
         Self {
             skip_intro: setting(console, "SkipIntro").unwrap_or(defaults.skip_intro),
@@ -26,6 +30,7 @@ impl GameplaySettings {
                 .unwrap_or(defaults.auto_learn_spells),
             instant_pickup_wizard_cards: setting(console, "InstantPickupWizardCards")
                 .unwrap_or(defaults.instant_pickup_wizard_cards),
+            skip_buttons: setting(console, "SkipButtons").unwrap_or(skip_buttons_default),
         }
     }
 
@@ -41,6 +46,7 @@ impl GameplaySettings {
                     "InstantPickupWizardCards",
                     self.instant_pickup_wizard_cards.to_string(),
                 ),
+                ("SkipButtons", self.skip_buttons.to_string()),
             ],
         )
     }
@@ -65,6 +71,7 @@ mod tests {
                 jump_skips_cutscenes: false,
                 auto_learn_spells: false,
                 instant_pickup_wizard_cards: false,
+                skip_buttons: false,
             }
         );
     }

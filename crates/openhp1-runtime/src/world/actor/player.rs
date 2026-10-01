@@ -895,7 +895,8 @@ impl ScriptRuntime {
             .and_then(|state| state.as_deref())
     }
 
-    pub fn skip_active_cutscene(&mut self) -> DispatchResult<Option<Vec<ActorAction>>> {
+    /// The actor of the HUD's `curCutScene`, if a cutscene is playing.
+    fn active_cutscene(&mut self) -> DispatchResult<Option<usize>> {
         let player = self.player_actor.ok_or(DispatchError::MissingPlayer)?;
         let player_class = self
             .actor_classes
@@ -934,7 +935,16 @@ impl ScriptRuntime {
         else {
             return Ok(None);
         };
-        let Some(cutscene) = self.object_actors.get(&cutscene_object).copied() else {
+        Ok(self.object_actors.get(&cutscene_object).copied())
+    }
+
+    /// Whether the HUD reports a playing cutscene that `CutSkip` could end.
+    pub fn cutscene_active(&mut self) -> DispatchResult<bool> {
+        self.active_cutscene().map(|cutscene| cutscene.is_some())
+    }
+
+    pub fn skip_active_cutscene(&mut self) -> DispatchResult<Option<Vec<ActorAction>>> {
+        let Some(cutscene) = self.active_cutscene()? else {
             return Ok(None);
         };
         let class = self

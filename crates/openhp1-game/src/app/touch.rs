@@ -30,15 +30,17 @@ enum Button {
     Cast,
     Boost,
     Brake,
+    Skip,
 }
 
 impl Button {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Pause,
         Self::Jump,
         Self::Cast,
         Self::Boost,
         Self::Brake,
+        Self::Skip,
     ];
 
     /// Boost and Brake only act on the broom.
@@ -53,6 +55,7 @@ impl Button {
             Self::Cast => "Cast",
             Self::Boost => "Boost",
             Self::Brake => "Brake",
+            Self::Skip => "Skip",
         }
     }
 
@@ -63,6 +66,13 @@ impl Button {
             Self::Cast => input.set_mouse_button(MouseButton::Left, state),
             Self::Boost => input.set_key(KeyCode::KeyZ, state),
             Self::Brake => input.set_key(KeyCode::KeyX, state),
+            Self::Skip => {
+                // One-shot flag: `InputState::player_input` clears it every
+                // frame, so releasing the button needs no key-up.
+                if state == ElementState::Pressed {
+                    input.skip_requested = true;
+                }
+            }
         }
     }
 }
@@ -105,7 +115,7 @@ impl Layout {
     fn radius(&self, button: Button) -> f32 {
         match button {
             Button::Jump | Button::Cast => 38.0 * self.unit,
-            Button::Pause | Button::Boost | Button::Brake => 28.0 * self.unit,
+            Button::Pause | Button::Boost | Button::Brake | Button::Skip => 28.0 * self.unit,
         }
     }
 
@@ -126,11 +136,22 @@ impl Layout {
             Button::Cast => jump - Vec2::new(large * 2.5, 0.0),
             Button::Boost => jump - Vec2::new(0.0, large * 2.5),
             Button::Brake => jump - Vec2::splat(large * 2.5),
+            // Under Pause: a cutscene covers the whole screen, so Skip shares
+            // the top-right corner instead of blocking the center, and stays
+            // clear of the HUD, the stick, and the action cluster.
+            Button::Skip => {
+                let inset = margin + self.radius(Button::Skip);
+                let pause_bottom = margin + self.radius(Button::Pause) * 2.0;
+                Pos2::new(
+                    self.area.max.x - inset,
+                    self.area.min.y + pause_bottom + inset,
+                )
+            }
         }
     }
 
-    fn button_at(&self, position: Pos2, broom: bool) -> Option<Button> {
-        visible_buttons(broom)
+    fn button_at(&self, position: Pos2, broom: bool, cutscene: bool) -> Option<Button> {
+        visible_buttons(broom, cutscene)
             .find(|button| position.distance(self.center(*button)) <= self.radius(*button) * 1.25)
     }
 }
@@ -145,13 +166,17 @@ enum Role {
 pub(super) struct TouchControls {
     enabled: bool,
     broom: bool,
+    cutscene: bool,
     touches: Vec<(u64, Role)>,
 }
 
-fn visible_buttons(broom: bool) -> impl Iterator<Item = Button> {
+/// Iterates the buttons currently drawn and hit-testable: broom-only buttons
+/// while flying, and Skip only while a cutscene can be skipped.
+fn visible_buttons(broom: bool, cutscene: bool) -> impl Iterator<Item = Button> {
     Button::ALL
         .into_iter()
         .filter(move |button| broom || !button.broom_only())
+        .filter(move |button| cutscene || *button != Button::Skip)
 }
 
 impl TouchControls {
@@ -159,6 +184,7 @@ impl TouchControls {
         Self {
             enabled,
             broom: false,
+            cutscene: false,
             touches: Vec::new(),
         }
     }
@@ -172,6 +198,16 @@ impl TouchControls {
         self.broom = broom;
     }
 
+    /// Shows the Skip button while a cutscene is active, dropping any Skip
+    /// touch still held when the cutscene ends so the button cannot stick.
+    pub(super) fn set_cutscene(&mut self, cutscene: bool) {
+        self.cutscene = cutscene;
+        if !cutscene {
+            self.touches
+                .retain(|(_, role)| !matches!(role, Role::Button(Button::Skip)));
+        }
+    }
+
     /// Applies one touch to `input`, returning whether pausing was requested.
     pub(super) fn handle(
         &mut self,
@@ -183,20 +219,21 @@ impl TouchControls {
         let existing = self.touches.iter().position(|(id, _)| *id == touch.id);
         match (touch.phase, existing) {
             (TouchPhase::Started, None) => {
-                let role = if let Some(button) = layout.button_at(position, self.broom) {
-                    if button == Button::Pause {
-                        return true;
-                    }
-                    button.set(input, ElementState::Pressed);
-                    Role::Button(button)
-                } else if position.x < layout.area.center().x && !self.has_stick() {
-                    Role::Stick {
-                        origin: position,
-                        position,
-                    }
-                } else {
-                    Role::Look { last: position }
-                };
+                let role =
+                    if let Some(button) = layout.button_at(position, self.broom, self.cutscene) {
+                        if button == Button::Pause {
+                            return true;
+                        }
+                        button.set(input, ElementState::Pressed);
+                        Role::Button(button)
+                    } else if position.x < layout.area.center().x && !self.has_stick() {
+                        Role::Stick {
+                            origin: position,
+                            position,
+                        }
+                    } else {
+                        Role::Look { last: position }
+                    };
                 self.touches.push((touch.id, role));
             }
             (TouchPhase::Moved, Some(index)) => match &mut self.touches[index].1 {
@@ -289,7 +326,7 @@ impl TouchControls {
             stroke,
         );
 
-        for button in visible_buttons(self.broom) {
+        for button in visible_buttons(self.broom, self.cutscene) {
             let center = to_screen(layout.center(button));
             let radius = layout.radius(button) * scale;
             let fill = if self.held(button) {
@@ -459,6 +496,61 @@ mod tests {
         controls.set_broom(true);
         controls.handle(&touch(2, TouchPhase::Started, boost), &layout, &mut input);
         assert!(input.keys.contains(&KeyCode::KeyZ));
+    }
+
+    #[test]
+    fn skip_button_only_appears_during_a_cutscene() {
+        let layout = layout();
+        let mut controls = TouchControls::new(true);
+        let mut input = InputState::default();
+        let skip = layout.center(Button::Skip);
+
+        assert!(!visible_buttons(false, false).any(|button| button == Button::Skip));
+        // Without a cutscene the point is plain look-around, not a button.
+        controls.handle(&touch(1, TouchPhase::Started, skip), &layout, &mut input);
+        assert!(!input.skip_requested);
+        controls.handle(&touch(1, TouchPhase::Ended, skip), &layout, &mut input);
+
+        controls.set_cutscene(true);
+        assert!(visible_buttons(false, true).any(|button| button == Button::Skip));
+        controls.handle(&touch(2, TouchPhase::Started, skip), &layout, &mut input);
+        assert!(input.skip_requested);
+    }
+
+    #[test]
+    fn pressing_skip_requests_a_one_shot_skip() {
+        let layout = layout();
+        let mut controls = TouchControls::new(true);
+        controls.set_cutscene(true);
+        let mut input = InputState::default();
+        let skip = layout.center(Button::Skip);
+
+        controls.handle(&touch(1, TouchPhase::Started, skip), &layout, &mut input);
+        assert!(input.skip_requested);
+        input.player_input(1.0 / 60.0);
+        assert!(!input.skip_requested);
+
+        // Releasing, like the desktop Enter key, requests nothing new.
+        controls.handle(&touch(1, TouchPhase::Ended, skip), &layout, &mut input);
+        assert!(!input.skip_requested);
+    }
+
+    #[test]
+    fn ending_the_cutscene_releases_a_held_skip_touch() {
+        let layout = layout();
+        let mut controls = TouchControls::new(true);
+        controls.set_cutscene(true);
+        let mut input = InputState::default();
+        let skip = layout.center(Button::Skip);
+
+        controls.handle(&touch(1, TouchPhase::Started, skip), &layout, &mut input);
+        assert!(controls.held(Button::Skip));
+        controls.set_cutscene(false);
+        assert!(!controls.held(Button::Skip));
+        // The stale touch for the vanished button requests nothing on release.
+        input.skip_requested = false;
+        controls.handle(&touch(1, TouchPhase::Ended, skip), &layout, &mut input);
+        assert!(!input.skip_requested);
     }
 
     #[test]

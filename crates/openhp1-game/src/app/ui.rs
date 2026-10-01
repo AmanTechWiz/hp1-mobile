@@ -2353,6 +2353,7 @@ impl GameUi {
                 "Instant Pickup Wizard Cards",
                 &mut self.gameplay.instant_pickup_wizard_cards,
             ),
+            (350.0, "Skip Buttons", &mut self.gameplay.skip_buttons),
         ] {
             if option_checkbox(
                 ui,
