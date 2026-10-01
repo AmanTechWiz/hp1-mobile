@@ -45,12 +45,11 @@
         position: fixed;
         inset: 0;
         display: flex;
-        align-items: center;
-        justify-content: center;
         padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
           max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
         background: #0b0b10;
         overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
       }
       body.playing #overlay {
         display: none;
@@ -58,6 +57,8 @@
       main {
         max-width: 34rem;
         width: 100%;
+        /* Auto margins center short content but never clip tall content. */
+        margin: auto;
       }
       h1 {
         margin: 0 0 0.25rem;
