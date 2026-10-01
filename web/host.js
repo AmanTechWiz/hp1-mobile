@@ -464,12 +464,13 @@ async function main() {
     element("webgpu").hidden = false;
   }
 
-  const db = await openDatabase();
-  await describeInstallation(db);
+  // Listen before the database opens so an early selection is not lost.
+  const database = openDatabase();
 
   const runImport = async (entries) => {
     element("setup").hidden = true;
     try {
+      const db = await database;
       const count = await importInstallation(db, await entries, showProgress);
       element("progress").hidden = true;
       element("setup").hidden = false;
@@ -498,6 +499,7 @@ async function main() {
     if (!confirm("Remove the imported game files from this browser? Saves and settings are kept.")) {
       return;
     }
+    const db = await database;
     await transaction(db, "readwrite", (store) => store.delete(directoryRange(GAME_ROOT)));
     await describeInstallation(db);
   });
@@ -505,11 +507,13 @@ async function main() {
     if (!confirm("Delete OpenHP1 settings and saved games from this browser?")) {
       return;
     }
+    const db = await database;
     await transaction(db, "readwrite", (store) => store.delete(directoryRange(SETTINGS_DIR)));
     await describeInstallation(db);
   });
-  element("play").addEventListener("click", () => start(db));
+  element("play").addEventListener("click", async () => start(await database));
   element("reload").addEventListener("click", () => location.reload());
+  await describeInstallation(await database);
 }
 
 main().catch((error) => showError(error?.message ?? String(error)));
