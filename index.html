@@ -67,6 +67,24 @@
         line-height: 1.45;
         color: #bbb;
       }
+      h2 {
+        margin: 1.4rem 0 0.5rem;
+        font-size: 1.05rem;
+        color: #cfc6f0;
+      }
+      .feature-list {
+        margin: 0;
+        padding-left: 1.1rem;
+        color: #bbb;
+        font-size: 0.9rem;
+        line-height: 1.5;
+      }
+      .feature-list li {
+        margin-bottom: 0.4rem;
+      }
+      .feature-list strong {
+        color: #eee;
+      }
       .actions {
         display: flex;
         flex-wrap: wrap;
@@ -181,6 +199,32 @@
         <section id="error" hidden>
           <p id="error-text"></p>
           <div class="actions"><button id="reload">Reload</button></div>
+        </section>
+
+        <section id="features">
+          <h2>What's new</h2>
+          <ul class="feature-list">
+            <li><strong>Plays in your browser</strong> — no install, no launcher, WebGPU rendering.</li>
+            <li>
+              <strong>Phone and tablet touch controls</strong> — a floating analog stick to move,
+              swipe anywhere to look, and on-screen buttons for jumping, casting, and broom flight.
+            </li>
+            <li>
+              <strong>Skip button</strong> — an on-screen Skip button appears during cutscenes and
+              storybooks, so you never need a keyboard to get past them. Toggle it under Pause →
+              Options → Gameplay.
+            </li>
+            <li>
+              <strong>Save states that survive a reload</strong> — saves are written to this
+              browser's own storage and come back next time you open the page.
+            </li>
+            <li><strong>Original audio</strong> — menu and storybook music play as they did.</li>
+            <li>
+              <strong>Import your own copy</strong> — bring the original game folder or ZIP; files
+              stay in this browser and are never uploaded.
+            </li>
+            <li><strong>Add to Home Screen</strong> — plays full screen from your home screen.</li>
+          </ul>
         </section>
 
         <p class="notice">
