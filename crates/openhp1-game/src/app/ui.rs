@@ -253,6 +253,28 @@ pub(super) struct OptionsState {
     pub(super) sound_volume: f32,
 }
 
+/// Music the shipped `HPMenu` pages request through `ClientSetMusic`.
+///
+/// `FEBook.ChangePage` plays the title theme whenever it shows the main page.
+/// `FEStoryBookPage.Created` plays the storybook theme, and
+/// `FEStoryBookPage.SetStoryAndPage` clears the song after the last page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MenuMusic {
+    Title,
+    StoryBook,
+    Stop,
+}
+
+impl MenuMusic {
+    pub(super) fn song(self) -> Option<&'static str> {
+        match self {
+            Self::Title => Some("Engine.JS_HP_Title_Screen_v2"),
+            Self::StoryBook => Some("Engine.JS_StoryBook_v2_mx"),
+            Self::Stop => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Page {
     Main,
@@ -577,6 +599,8 @@ pub(super) struct GameUi {
     confirm_replace: bool,
     selected_slot: Option<usize>,
     action: Option<Action>,
+    music: Option<MenuMusic>,
+    shown_page: Option<Page>,
     save_slots: [bool; 6],
     save_slot_textures: [Option<UiTexture>; 6],
     labels: Labels,
@@ -1210,6 +1234,8 @@ impl GameUi {
             confirm_replace: false,
             selected_slot: None,
             action: None,
+            music: None,
+            shown_page: None,
             save_slots,
             save_slot_textures,
             labels,
@@ -1246,6 +1272,10 @@ impl GameUi {
 
     pub(super) fn take_action(&mut self) -> Option<Action> {
         self.action.take()
+    }
+
+    pub(super) fn take_music(&mut self) -> Option<MenuMusic> {
+        self.music.take()
     }
 
     pub(super) fn open_pause(&mut self) {
@@ -1337,6 +1367,11 @@ impl GameUi {
     }
 
     pub(super) fn ui(&mut self, context: &egui::Context) {
+        let shown_page = self.open.then_some(self.page);
+        if shown_page == Some(Page::Main) && self.shown_page != shown_page {
+            self.music = Some(MenuMusic::Title);
+        }
+        self.shown_page = shown_page;
         if !self.open {
             if !self.startup {
                 self.hud(context);
@@ -1635,6 +1670,7 @@ impl GameUi {
         self.story_slot = Some(slot);
         self.story_event = None;
         self.page = Page::StoryBook;
+        self.music = Some(MenuMusic::StoryBook);
         let page = &self.story_pages[0];
         (self.story_sound_at, self.story_deadline) = story_timing(Instant::now(), page.duration);
     }
@@ -1668,6 +1704,7 @@ impl GameUi {
         self.story_pages = load_story_pages(&self.context, &mut packages, pages)?;
         self.open = true;
         self.page = Page::StoryBook;
+        self.music = Some(MenuMusic::StoryBook);
         let page = &self.story_pages[0];
         (self.story_sound_at, self.story_deadline) = story_timing(Instant::now(), page.duration);
         Ok(())
@@ -1689,10 +1726,12 @@ impl GameUi {
         } else if let Some(slot) = self.story_slot.take() {
             self.story_sound_at = None;
             self.story_deadline = None;
+            self.music = Some(MenuMusic::Stop);
             self.action = Some(Action::NewGame(slot));
         } else if let Some(event) = self.story_event.take() {
             self.story_sound_at = None;
             self.story_deadline = None;
+            self.music = Some(MenuMusic::Stop);
             self.story_index = None;
             self.open = false;
             self.action = Some(Action::DispatchStoryEvent(event));

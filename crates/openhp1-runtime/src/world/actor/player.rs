@@ -1153,6 +1153,44 @@ impl ScriptRuntime {
         Ok(actions)
     }
 
+    /// Calls the player's `ClientSetMusic`, as the shipped `HPMenu` pages do.
+    ///
+    /// `song` is a qualified `Music` object name such as
+    /// `Engine.JS_HP_Title_Screen_v2`; `None` clears the song.
+    pub fn client_set_music(
+        &mut self,
+        song: Option<&str>,
+        section: u8,
+        cd_track: u8,
+        transition: u8,
+    ) -> DispatchResult<Vec<ActorAction>> {
+        let song = match song {
+            Some(name) => {
+                let object = self
+                    .packages
+                    .find_localized_object(name, "Music")?
+                    .ok_or_else(|| DispatchError::UnresolvedObject {
+                        message: format!("music `{name}` is not in the game packages"),
+                    })?;
+                Value::Object(self.object_handle(crate::world::object_id(
+                    &object.package,
+                    object.export_index,
+                ))?)
+            }
+            None => Value::Object(0),
+        };
+        self.dispatch_player_event(
+            "ClientSetMusic",
+            &[
+                song,
+                Value::Byte(section),
+                Value::Byte(cd_track),
+                Value::Byte(transition),
+                Value::Bool(false),
+            ],
+        )
+    }
+
     pub fn take_player_music(&mut self) -> DispatchResult<Option<PlayerMusic>> {
         let actor = self.player_actor.ok_or(DispatchError::MissingPlayer)?;
         let class = self

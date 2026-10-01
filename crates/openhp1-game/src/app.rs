@@ -1689,24 +1689,6 @@ impl Graphics {
             Ok(actions) => self.apply_actions(actions),
             Err(error) => self.last_error = Some(format!("trigger update failed: {error}")),
         }
-        match self.runtime.take_player_music() {
-            Ok(Some(music)) => {
-                if let Some(audio) = self.audio.as_mut() {
-                    let result = match music.clip {
-                        Some(clip) => audio.play_music(&clip, 1.0),
-                        None => {
-                            audio.stop_music();
-                            Ok(())
-                        }
-                    };
-                    if let Err(error) = result {
-                        self.last_error = Some(error.to_string());
-                    }
-                }
-            }
-            Ok(None) => {}
-            Err(error) => self.last_error = Some(format!("music update failed: {error}")),
-        }
         match self.runtime.particle_emitters().and_then(|emitters| {
             self.scene
                 .sync_particle_emitters(emitters)
@@ -1786,7 +1768,42 @@ impl Graphics {
         }
     }
 
+    /// Applies the player's `Song` changes every frame, including while menus
+    /// pause gameplay, like the original audio subsystem's per-frame update.
+    fn update_music(&mut self) {
+        if let Some(music) = self.game_ui.take_music() {
+            // EMusicTransition.MTRAN_Instant.
+            const MTRAN_INSTANT: u8 = 1;
+            match self
+                .runtime
+                .client_set_music(music.song(), 0, 255, MTRAN_INSTANT)
+            {
+                Ok(actions) => self.apply_actions(actions),
+                Err(error) => self.last_error = Some(format!("could not set menu music: {error}")),
+            }
+        }
+        match self.runtime.take_player_music() {
+            Ok(Some(music)) => {
+                if let Some(audio) = self.audio.as_mut() {
+                    let result = match music.clip {
+                        Some(clip) => audio.play_music(&clip, 1.0),
+                        None => {
+                            audio.stop_music();
+                            Ok(())
+                        }
+                    };
+                    if let Err(error) = result {
+                        self.last_error = Some(error.to_string());
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => self.last_error = Some(format!("music update failed: {error}")),
+        }
+    }
+
     fn update_audio(&mut self) {
+        self.update_music();
         let Some(audio) = self.audio.as_mut() else {
             return;
         };
@@ -2438,6 +2455,33 @@ mod tests {
         assert_eq!(active_save_slot(99, Some(3)), 3);
         assert_eq!(active_save_slot(99, None), 99);
         assert_eq!(active_save_slot(2, Some(3)), 2);
+    }
+
+    #[test]
+    #[ignore = "requires the local original-game corpus"]
+    fn menu_music_reaches_the_player_song_like_hpmenu() {
+        let game_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../res");
+        let mut scene = LoadedScene::load(game_root.join("Maps/startup.unr")).unwrap();
+        let console = ConsoleCommands::headless(&game_root).unwrap();
+        let (mut runtime, _) = initialize_saved_runtime(&mut scene, console, false).unwrap();
+        let _ = runtime.take_player_music().unwrap();
+
+        runtime
+            .client_set_music(ui::MenuMusic::Title.song(), 0, 255, 1)
+            .unwrap();
+        let music = runtime.take_player_music().unwrap().unwrap();
+        assert_eq!(music.transition, 1);
+        assert!(music.clip.is_some());
+        assert!(runtime.take_player_music().unwrap().is_none());
+
+        runtime
+            .client_set_music(ui::MenuMusic::StoryBook.song(), 0, 255, 1)
+            .unwrap();
+        assert!(runtime.take_player_music().unwrap().unwrap().clip.is_some());
+        runtime
+            .client_set_music(ui::MenuMusic::Stop.song(), 0, 255, 1)
+            .unwrap();
+        assert!(runtime.take_player_music().unwrap().unwrap().clip.is_none());
     }
 
     #[test]
