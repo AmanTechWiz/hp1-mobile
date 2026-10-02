@@ -14,8 +14,10 @@ scripts/build-web.sh --release            # writes target/web
 ```
 
 `scripts/build-web.sh` builds the game for wasm, runs `wasm-bindgen --target web`,
-and copies the static shell from [`web/`](../web/). It runs `wasm-opt` for
-release builds when that tool is installed. Serve the output directory as static
+and copies the static shell from [`web/`](../web/). `--release` builds with the
+workspace's `web` profile (release plus fat LTO and one codegen unit, since the
+script VM and animation code are CPU-bound on phones) and runs `wasm-opt -O3`
+when that tool is installed. Serve the output directory as static
 files. Browsers expose WebGPU only to secure contexts, so serve it over HTTPS,
 or from `localhost` when testing on the same machine. An iPhone on the local
 network cannot use a plain `http://` LAN address.
@@ -134,7 +136,7 @@ the presented game image:
 
 | Control | Desktop equivalent |
 | --- | --- |
-| Floating analog stick, anchored where the thumb lands on the left half | `W`/`A`/`S`/`D`, scaled by how far the stick is pushed (12% radial dead zone) |
+| Floating analog stick, anchored where the thumb lands on the left half | `W`/`A`/`S`/`D`, scaled by how far the stick is pushed (10% radial dead zone) |
 | Drag elsewhere | Mouse motion (2 counts per logical pixel) |
 | Jump | `Space` |
 | Cast | Left mouse button |
@@ -144,11 +146,41 @@ the presented game image:
 The stick's `[right, forward]` vector scales the same `aBaseY`, `aStrafe`, and
 `aBaseX` axes the keys drive, so a partial push walks slower. Broom pitch is
 digital and holds once the stick passes halfway. Touches drive the same
-`InputState` as the desktop bindings, so gameplay sees the original input axes. Menus receive touches through egui as pointer input.
+`InputState` as the desktop bindings, so gameplay sees the original input axes.
+
+The stick follows the virtual sticks of console emulators. Pulling past the rim
+drags the base along with the thumb, so the full radius of travel is always
+available in the opposite direction. The axes ease toward the thumb with a 35 ms
+time constant (smoothing jitter and the jump from rest to a full push) but drop
+to zero at once on release, so Harry never keeps walking after the thumb lifts.
+The knob glides with the thumb, and the floating base fades in and out. Button
+hit targets extend to 1.35 times the drawn radius. Controls sit inside the
+screen's safe-area insets (`env(safe-area-inset-*)`, read by
+`openhp1Host.safeArea()`), clear of the notch, rounded corners, and home
+indicator, while touches anywhere on screen still look around. Menus receive touches through egui as pointer input.
 Holding Cast while dragging to look traces spell gestures. Controls are laid out
 inside the letterboxed game area, because they are drawn into the game image.
-Touch devices therefore default to a 1280x720 internal resolution when no
-resolution is saved, which fills wide phone screens.
+Touch devices default to a 720-row internal image when no resolution is saved.
+
+### Full screen and frame pacing
+
+The canvas covers the whole screen (`viewport-fit=cover`). On touch devices the
+internal frame takes the surface's aspect ratio (`presentation::match_aspect`),
+rounded to even sizes and limited to the 4K pixel budget, so a 19.5:9 phone gets
+a 19.5:9 image instead of a 16:9 one with black bars. The camera already fixes
+the 4:3 horizontal field of view and extends it on wider frames. The frame is
+resized whenever the surface resizes, such as on rotation. Browsers that
+letterbox the page (iPhone Safari with its toolbars showing) still do so; add the
+page to the Home Screen for a true full-screen window.
+
+An adaptive scaler (`app/adaptive_resolution.rs`) trades resolution for frame
+time. Frames slower than 22 ms (about 36 of them, net of fast frames) lower the
+height by one of five steps down to half of the configured height. Six seconds of frames
+at or below 18.5 ms raise it again, and a rise that has to be undone within 30
+seconds caps the scale for two minutes, so the size does not oscillate. Frames
+over 100 ms (map loads) are ignored. It is on for touch devices only and does
+not change the saved resolution. iOS Low Power Mode limits animation frames to
+30 fps; the scaler cannot recover that and will settle at its lowest step.
 
 Browsers without the Pointer Lock API (iPhone Safari) never request cursor
 capture: winit calls the API unconditionally, and the resulting exception left
@@ -172,4 +204,6 @@ backing store at CSS pixels while reporting the scaled `devicePixelRatio`, so
 input lands at the wrong position. Test touch input there with a scale factor
 of 1. Real browsers are unaffected.
 
-The game has not yet been verified on a physical iOS device.
+The full-screen image, the stick behavior, the safe-area layout, and the
+adaptive scaler have only been verified by unit tests and a wasm build, not on
+a device. The game has not yet been verified on a physical iOS device.

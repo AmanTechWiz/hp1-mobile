@@ -425,6 +425,29 @@ class Host {
     return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }
 
+  // The screen's `[top, right, bottom, left]` safe-area insets in CSS pixels:
+  // the notch, rounded corners, and home indicator. The canvas covers the whole
+  // screen (`viewport-fit=cover`), so on-screen controls must stay clear of
+  // them.
+  safeArea() {
+    if (!this.safeAreaProbe) {
+      const probe = document.createElement("div");
+      probe.style.cssText =
+        "position:fixed;visibility:hidden;pointer-events:none;left:0;top:0;width:0;height:0;" +
+        "padding:env(safe-area-inset-top) env(safe-area-inset-right) " +
+        "env(safe-area-inset-bottom) env(safe-area-inset-left)";
+      document.body.appendChild(probe);
+      this.safeAreaProbe = probe;
+    }
+    const style = getComputedStyle(this.safeAreaProbe);
+    return [
+      style.paddingTop,
+      style.paddingRight,
+      style.paddingBottom,
+      style.paddingLeft,
+    ].map((value) => parseFloat(value) || 0);
+  }
+
   ready() {
     document.body.classList.add("playing");
     element("openhp1-canvas").focus();

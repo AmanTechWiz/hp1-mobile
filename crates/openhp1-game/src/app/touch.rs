@@ -9,6 +9,11 @@
 //! Harry in any direction, scaled by how far it is pushed, like a gamepad
 //! stick. Dragging anywhere else looks around, and the buttons hold their
 //! mapped key or mouse button for as long as they are touched.
+//!
+//! The stick behaves like the virtual sticks of console emulators: its base
+//! follows the thumb when it is pulled past the rim, so the thumb never runs
+//! out of travel; the movement axes ease in over a few milliseconds instead of
+//! snapping; and the knob glides with the thumb and back to center on release.
 
 use egui::{Align2, Color32, FontId, Id, LayerId, Order, Pos2, Rect, Stroke, Vec2};
 use winit::{
@@ -22,7 +27,17 @@ use super::InputState;
 const LOOK_SCALE: f32 = 2.0;
 /// Fraction of the stick radius ignored around its center, so a resting
 /// thumb does not drift.
-const STICK_DEAD_ZONE: f32 = 0.12;
+const STICK_DEAD_ZONE: f32 = 0.1;
+/// Time constant of the easing applied to the movement axes, in seconds. Short
+/// enough to be imperceptible as lag, long enough to smooth thumb jitter and
+/// the jump from rest to a full push.
+const STICK_RESPONSE_SECONDS: f32 = 0.035;
+/// Time constant of the knob's glide, in seconds.
+const KNOB_GLIDE_SECONDS: f32 = 0.03;
+/// Time constant of the knob's return and fade after release, in seconds.
+const KNOB_RELEASE_SECONDS: f32 = 0.07;
+/// Touches within this multiple of a button's drawn radius press it.
+const BUTTON_HIT_SCALE: f32 = 1.35;
 /// Logical height of the game area at which controls reach full size.
 const FULL_SIZE_HEIGHT: f32 = 400.0;
 
@@ -87,16 +102,34 @@ impl Button {
 /// letterboxed.
 pub(super) struct Layout {
     area: Rect,
+    /// `area` shrunk by the screen's safe-area insets (notch, rounded corners,
+    /// home indicator): controls sit inside it, while touches anywhere in
+    /// `area` still look around.
+    safe: Rect,
     scale_factor: f32,
     unit: f32,
 }
 
 impl Layout {
-    pub(super) fn new(area: Rect, scale_factor: f32) -> Self {
+    /// `insets` are the `[top, right, bottom, left]` safe-area insets in
+    /// physical pixels.
+    pub(super) fn new(area: Rect, scale_factor: f32, insets: [f32; 4]) -> Self {
         let scale_factor = scale_factor.max(0.01);
         let unit = scale_factor * (area.height() / scale_factor / FULL_SIZE_HEIGHT).clamp(0.6, 1.0);
+        let [top, right, bottom, left] = insets.map(|inset| inset.max(0.0));
+        let safe = Rect::from_min_max(
+            area.min + Vec2::new(left, top),
+            area.max - Vec2::new(right, bottom),
+        );
+        // Insets that swallow the whole area would leave no room for controls.
+        let safe = if safe.width() > area.width() * 0.5 && safe.height() > area.height() * 0.5 {
+            safe
+        } else {
+            area
+        };
         Self {
             area,
+            safe,
             scale_factor,
             unit,
         }
@@ -112,13 +145,13 @@ impl Layout {
 
     fn stick_home(&self) -> Pos2 {
         let inset = self.margin() + self.stick_radius() * 1.2;
-        Pos2::new(self.area.min.x + inset, self.area.max.y - inset)
+        Pos2::new(self.safe.min.x + inset, self.safe.max.y - inset)
     }
 
     /// The drawn circle is also the floor of the hit target: [`Self::button_at`]
-    /// accepts touches up to 1.25 times this, so both sizes grow together and
-    /// the cluster spacing in [`Self::center`] keeps the targets tangent at
-    /// worst, never overlapping.
+    /// accepts touches up to [`BUTTON_HIT_SCALE`] times this, so both sizes
+    /// grow together. The cluster spacing in [`Self::center`] is 2.5 radii of
+    /// the large buttons, which keeps neighbouring targets from overlapping.
     fn radius(&self, button: Button) -> f32 {
         match button {
             Button::Jump | Button::Cast => 42.0 * self.unit,
@@ -130,14 +163,14 @@ impl Layout {
         let margin = self.margin();
         let large = self.radius(Button::Jump);
         let jump = Pos2::new(
-            self.area.max.x - margin - large,
-            self.area.max.y - margin - large,
+            self.safe.max.x - margin - large,
+            self.safe.max.y - margin - large,
         );
         match button {
             // Top right: the original HUD draws Harry's health in the top left.
             Button::Pause => {
                 let inset = margin + self.radius(Button::Pause);
-                Pos2::new(self.area.max.x - inset, self.area.min.y + inset)
+                Pos2::new(self.safe.max.x - inset, self.safe.min.y + inset)
             }
             Button::Jump => jump,
             Button::Cast => jump - Vec2::new(large * 2.5, 0.0),
@@ -150,16 +183,17 @@ impl Layout {
                 let inset = margin + self.radius(Button::Skip);
                 let pause_bottom = margin + self.radius(Button::Pause) * 2.0;
                 Pos2::new(
-                    self.area.max.x - inset,
-                    self.area.min.y + pause_bottom + inset,
+                    self.safe.max.x - inset,
+                    self.safe.min.y + pause_bottom + inset,
                 )
             }
         }
     }
 
     fn button_at(&self, position: Pos2, broom: bool, cutscene: bool) -> Option<Button> {
-        visible_buttons(broom, cutscene)
-            .find(|button| position.distance(self.center(*button)) <= self.radius(*button) * 1.25)
+        visible_buttons(broom, cutscene).find(|button| {
+            position.distance(self.center(*button)) <= self.radius(*button) * BUTTON_HIT_SCALE
+        })
     }
 }
 
@@ -175,6 +209,18 @@ pub(super) struct TouchControls {
     broom: bool,
     cutscene: bool,
     touches: Vec<(u64, Role)>,
+    /// Where the thumb currently points, as `[right, forward]` axes.
+    stick_target: [f32; 2],
+    /// `stick_target` eased over [`STICK_RESPONSE_SECONDS`], the value gameplay sees.
+    stick_value: [f32; 2],
+    /// Knob offset from the stick origin the thumb asks for, in stick radii.
+    knob_target: Vec2,
+    /// The drawn knob offset, gliding toward `knob_target`.
+    knob: Vec2,
+    /// Where the floating base was last anchored.
+    base: Pos2,
+    /// Fades the floating stick in while touched and out after release.
+    glow: f32,
 }
 
 /// Iterates the buttons currently drawn and hit-testable: broom-only buttons
@@ -193,6 +239,12 @@ impl TouchControls {
             broom: false,
             cutscene: false,
             touches: Vec::new(),
+            stick_target: [0.0; 2],
+            stick_value: [0.0; 2],
+            knob_target: Vec2::ZERO,
+            knob: Vec2::ZERO,
+            base: Pos2::ZERO,
+            glow: 0.0,
         }
     }
 
@@ -242,6 +294,12 @@ impl TouchControls {
                         button.set(input, ElementState::Pressed);
                         Role::Button(button)
                     } else if position.x < layout.area.center().x && !self.has_stick() {
+                        self.stick_target = [0.0; 2];
+                        self.knob_target = Vec2::ZERO;
+                        if self.glow <= 0.01 {
+                            self.knob = Vec2::ZERO;
+                        }
+                        self.base = position;
                         Role::Stick {
                             origin: position,
                             position,
@@ -261,13 +319,21 @@ impl TouchControls {
                     .iter()
                     .position(|(_, role)| matches!(role, Role::Look { .. }))
                     == Some(index);
+                let mut stick = None;
                 match &mut self.touches[index].1 {
                     Role::Stick {
                         origin,
                         position: current,
                     } => {
                         *current = position;
-                        input.stick = stick_axes((position - *origin) / layout.stick_radius());
+                        // Pulling past the rim drags the base along, so the
+                        // thumb always has the full radius to travel back.
+                        let limit = layout.stick_radius();
+                        let offset = position - *origin;
+                        if offset.length() > limit {
+                            *origin = position - offset.normalized() * limit;
+                        }
+                        stick = Some((*origin, (position - *origin) / limit));
                     }
                     Role::Look { last } => {
                         if leads_look {
@@ -279,10 +345,15 @@ impl TouchControls {
                     }
                     Role::Button(_) => {}
                 }
+                if let Some((origin, offset)) = stick {
+                    self.base = origin;
+                    self.knob_target = offset;
+                    self.stick_target = stick_axes(offset);
+                }
             }
             (TouchPhase::Ended | TouchPhase::Cancelled, Some(index)) => {
                 match self.touches.remove(index).1 {
-                    Role::Stick { .. } => input.stick = [0.0; 2],
+                    Role::Stick { .. } => self.release_stick(input),
                     Role::Button(button) => button.set(input, ElementState::Released),
                     Role::Look { .. } => {}
                 }
@@ -298,6 +369,49 @@ impl TouchControls {
     /// again on its next `Moved` instead of leaving it dead until lifted.
     pub(super) fn release(&mut self) {
         self.touches.clear();
+        self.stick_target = [0.0; 2];
+        self.stick_value = [0.0; 2];
+        self.knob_target = Vec2::ZERO;
+    }
+
+    /// Stops movement at once on release, since easing out would keep Harry
+    /// walking after the thumb lifted; the knob still glides home visually.
+    fn release_stick(&mut self, input: &mut InputState) {
+        self.stick_target = [0.0; 2];
+        self.stick_value = [0.0; 2];
+        self.knob_target = Vec2::ZERO;
+        input.stick = [0.0; 2];
+    }
+
+    /// Advances the stick's easing by `delta_time` seconds and publishes the
+    /// movement axes. Called once per frame before the input is consumed.
+    pub(super) fn update(&mut self, delta_time: f32, input: &mut InputState) {
+        let delta_time = if delta_time.is_finite() {
+            delta_time.clamp(0.0, 0.1)
+        } else {
+            0.0
+        };
+        let ease = |seconds: f32| 1.0 - (-delta_time / seconds).exp();
+        if self.has_stick() {
+            let response = ease(STICK_RESPONSE_SECONDS);
+            for (value, target) in self.stick_value.iter_mut().zip(self.stick_target) {
+                *value += (target - *value) * response;
+                if (target - *value).abs() < 1e-3 {
+                    *value = target;
+                }
+            }
+            input.stick = self.stick_value;
+            self.knob += (self.knob_target - self.knob) * ease(KNOB_GLIDE_SECONDS);
+            self.glow += (1.0 - self.glow) * ease(KNOB_GLIDE_SECONDS);
+        } else {
+            let release = ease(KNOB_RELEASE_SECONDS);
+            self.knob += (Vec2::ZERO - self.knob) * release;
+            self.glow -= self.glow * release;
+            if self.glow < 0.01 {
+                self.glow = 0.0;
+                self.knob = Vec2::ZERO;
+            }
+        }
     }
 
     fn has_stick(&self) -> bool {
@@ -323,38 +437,59 @@ impl TouchControls {
         let painter =
             context.layer_painter(LayerId::new(Order::Foreground, Id::new("touch_controls")));
         let stroke = Stroke::new(2.0, Color32::from_white_alpha(150));
-        let rest_stroke = Stroke::new(1.5, Color32::from_white_alpha(90));
 
-        let stick = self.touches.iter().find_map(|(_, role)| match role {
-            Role::Stick { origin, position } => Some((*origin, *position)),
-            _ => None,
-        });
         let radius = layout.stick_radius() * scale;
         // The base ring and center dot are always drawn at the stick's home,
         // so a first-time player sees where the stick will come up before
-        // touching anything; the knob only appears under the thumb.
+        // touching anything. While a thumb is down the home ring dims and the
+        // floating base fades in under it, then fades out again on release.
         let home = to_screen(layout.stick_home());
-        painter.circle(home, radius, Color32::from_black_alpha(70), rest_stroke);
-        painter.circle_filled(home, radius * 0.1, Color32::from_white_alpha(170));
-        if let Some((origin, position)) = stick {
-            // The knob stops at the rim while the thumb may travel past it.
-            let offset = position - origin;
-            let limit = layout.stick_radius();
-            let knob = if offset.length() > limit {
-                origin + offset.normalized() * limit
-            } else {
-                position
-            };
-            let origin = to_screen(origin);
-            if origin != home {
-                // A floating stick still marks where it came to rest.
-                painter.circle(origin, radius, Color32::TRANSPARENT, rest_stroke);
+        let glow = self.glow;
+        let base = to_screen(self.base);
+        let floating = glow > 0.0 && base.distance(home) > radius * 0.25;
+        let home_alpha = if floating { 1.0 - glow * 0.6 } else { 1.0 };
+        let faded = |alpha: u8| Color32::from_white_alpha((f32::from(alpha) * home_alpha) as u8);
+        painter.circle(
+            home,
+            radius,
+            Color32::from_black_alpha((70.0 * home_alpha) as u8),
+            Stroke::new(1.5, faded(90)),
+        );
+        painter.circle_filled(home, radius * 0.1, faded(170));
+        if glow > 0.0 {
+            let origin = if floating { base } else { home };
+            let alpha = |value: f32| (value * glow) as u8;
+            if floating {
+                painter.circle(
+                    origin,
+                    radius,
+                    Color32::from_black_alpha(alpha(70.0)),
+                    Stroke::new(1.5, Color32::from_white_alpha(alpha(110.0))),
+                );
             }
+            // The knob stays inside the rim even while the thumb is past it.
+            let offset = if self.knob.length() > 1.0 {
+                self.knob.normalized()
+            } else {
+                self.knob
+            };
+            let knob = origin + offset * radius;
+            let knob_radius = radius * 0.42;
+            painter.circle_filled(
+                knob + Vec2::new(0.0, knob_radius * 0.12),
+                knob_radius,
+                Color32::from_black_alpha(alpha(60.0)),
+            );
             painter.circle(
-                to_screen(knob),
-                radius * 0.45,
-                Color32::from_white_alpha(120),
-                stroke,
+                knob,
+                knob_radius,
+                Color32::from_white_alpha(alpha(95.0)),
+                Stroke::new(2.0, Color32::from_white_alpha(alpha(190.0))),
+            );
+            painter.circle_filled(
+                knob - Vec2::splat(knob_radius * 0.22),
+                knob_radius * 0.32,
+                Color32::from_white_alpha(alpha(60.0)),
             );
         }
 
@@ -427,6 +562,7 @@ mod tests {
         Layout::new(
             Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 800.0)),
             2.0,
+            [0.0; 4],
         )
     }
 
@@ -440,6 +576,13 @@ mod tests {
         }
     }
 
+    /// Runs the stick's easing long enough to settle on its target.
+    fn settle(controls: &mut TouchControls, input: &mut InputState) {
+        for _ in 0..60 {
+            controls.update(1.0 / 60.0, input);
+        }
+    }
+
     #[test]
     fn left_stick_moves_in_any_direction_by_how_far_it_is_pushed() {
         let layout = layout();
@@ -450,21 +593,85 @@ mod tests {
         controls.handle(&touch(1, TouchPhase::Started, start), &layout, &mut input);
         let mut drag = |offset: Vec2, input: &mut InputState| {
             controls.handle(&touch(1, TouchPhase::Moved, start + offset), &layout, input);
+            settle(&mut controls, input);
             input.stick
         };
 
-        assert_eq!(drag(Vec2::new(0.0, -radius * 0.1), &mut input), [0.0; 2]);
-        let [right, forward] = drag(Vec2::new(0.0, -radius * 2.0), &mut input);
-        assert!(right.abs() < 1e-6 && (forward - 1.0).abs() < 1e-6);
+        assert_eq!(drag(Vec2::new(0.0, -radius * 0.05), &mut input), [0.0; 2]);
         let [right, forward] = drag(Vec2::new(radius, radius).normalized() * radius, &mut input);
-        assert!((right - forward.abs()).abs() < 1e-6 && forward < 0.0);
-        assert!(((right * right + forward * forward).sqrt() - 1.0).abs() < 1e-5);
-        let [right, _] = drag(Vec2::new(-radius * 0.56, 0.0), &mut input);
-        assert!((right + 0.5).abs() < 1e-5);
+        assert!((right - forward.abs()).abs() < 1e-3 && forward < 0.0);
+        assert!(((right * right + forward * forward).sqrt() - 1.0).abs() < 1e-3);
+        let [right, forward] = drag(Vec2::new(0.0, -radius * 2.0), &mut input);
+        assert!(right.abs() < 1e-3 && (forward - 1.0).abs() < 1e-3);
         assert!(input.keys.is_empty());
 
         controls.handle(&touch(1, TouchPhase::Ended, start), &layout, &mut input);
+        // Releasing stops movement at once rather than easing out.
         assert_eq!(input.stick, [0.0; 2]);
+    }
+
+    #[test]
+    fn stick_axes_ease_in_instead_of_snapping() {
+        let layout = layout();
+        let radius = layout.stick_radius();
+        let mut controls = TouchControls::new(true);
+        let mut input = InputState::default();
+        let start = Pos2::new(300.0, 500.0);
+        controls.handle(&touch(1, TouchPhase::Started, start), &layout, &mut input);
+        controls.handle(
+            &touch(1, TouchPhase::Moved, start + Vec2::new(0.0, -radius)),
+            &layout,
+            &mut input,
+        );
+        controls.update(1.0 / 60.0, &mut input);
+        let first = input.stick[1];
+        assert!(first > 0.0 && first < 0.9, "first frame was {first}");
+        settle(&mut controls, &mut input);
+        assert!((input.stick[1] - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_base_follows_a_thumb_pulled_past_the_rim() {
+        let layout = layout();
+        let radius = layout.stick_radius();
+        let mut controls = TouchControls::new(true);
+        let mut input = InputState::default();
+        let start = Pos2::new(300.0, 500.0);
+        controls.handle(&touch(1, TouchPhase::Started, start), &layout, &mut input);
+        let far = start + Vec2::new(radius * 3.0, 0.0);
+        controls.handle(&touch(1, TouchPhase::Moved, far), &layout, &mut input);
+        settle(&mut controls, &mut input);
+        assert!((input.stick[0] - 1.0).abs() < 1e-3);
+
+        // Coming back by one radius is already the center; no travel is lost.
+        controls.handle(
+            &touch(1, TouchPhase::Moved, far - Vec2::new(radius, 0.0)),
+            &layout,
+            &mut input,
+        );
+        settle(&mut controls, &mut input);
+        assert!(input.stick[0] < 0.01);
+    }
+
+    #[test]
+    fn controls_move_inside_the_safe_area() {
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(2556.0, 1179.0));
+        let insets = [0.0, 150.0, 60.0, 150.0];
+        let layout = Layout::new(area, 3.0, insets);
+        for button in Button::ALL {
+            let radius = layout.radius(button);
+            let bounds = Rect::from_center_size(layout.center(button), Vec2::splat(radius * 2.0));
+            assert!(
+                layout.safe.contains_rect(bounds),
+                "{button:?} leaves the safe area"
+            );
+        }
+        assert!(layout.safe.min.x >= 150.0 && layout.safe.max.x <= 2556.0 - 150.0);
+        // A touch outside the safe area still looks around.
+        assert_eq!(
+            layout.button_at(Pos2::new(2540.0, 1170.0), true, true),
+            None
+        );
     }
 
     #[test]
@@ -688,7 +895,7 @@ mod tests {
     #[test]
     fn controls_stay_inside_the_presented_game_area() {
         let area = Rect::from_min_size(Pos2::new(300.0, 0.0), Vec2::new(1000.0, 750.0));
-        let layout = Layout::new(area, 3.0);
+        let layout = Layout::new(area, 3.0, [0.0; 4]);
         for button in Button::ALL {
             let radius = layout.radius(button);
             let bounds = Rect::from_center_size(layout.center(button), Vec2::splat(radius * 2.0));

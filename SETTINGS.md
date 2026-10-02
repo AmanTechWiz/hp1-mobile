@@ -117,6 +117,12 @@ large, OpenHP1 uses its default instead.
 `ResolutionX` and `ResolutionY` control the game image, not the physical window.
 This lets you keep the original 1024x768 presentation inside a larger window.
 
+On touch screens (the browser build on phones and tablets) only `ResolutionY`
+is used as a height budget. The image takes the screen's own aspect ratio, so
+it fills the display with no black bars, and the game lowers the height by up to
+half while frames run slower than about 45 fps, raising it again when they
+recover. The saved value is never changed by that.
+
 ## `[WinDrv.WindowsClient]`
 
 | Key | Default | Accepted values | What it does |

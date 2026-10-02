@@ -43,6 +43,9 @@ extern "C" {
     #[wasm_bindgen(js_namespace = openhp1Host, js_name = nextFrame)]
     fn host_next_frame() -> js_sys::Promise;
 
+    #[wasm_bindgen(js_namespace = openhp1Host, js_name = safeArea)]
+    fn host_safe_area() -> js_sys::Array;
+
     #[wasm_bindgen(js_namespace = openhp1Host, js_name = ready)]
     fn host_ready();
 
@@ -210,6 +213,12 @@ pub(crate) fn touch_screen() -> bool {
     web_sys::window().is_some_and(|window| {
         window.navigator().max_touch_points() > 0 || has_property(&window, "ontouchstart")
     })
+}
+
+/// The screen's `[top, right, bottom, left]` safe-area insets in CSS pixels.
+pub(crate) fn safe_area_insets() -> [f32; 4] {
+    let insets = host_safe_area();
+    std::array::from_fn(|index| insets.get(index as u32).as_f64().unwrap_or(0.0) as f32)
 }
 
 /// Whether the browser can lock the mouse cursor.

@@ -11,7 +11,7 @@ const CLASSIC_SECTION: &str = "OpenHP1.Renderer.Classic";
 const MODERN_SECTION: &str = "OpenHP1.Renderer.Modern";
 const WINDOWS_CLIENT_SECTION: &str = "WinDrv.WindowsClient";
 const LEGACY_SECTION: &str = "OpenHP1.Graphics";
-const MAX_RENDER_PIXELS: u64 = 3840 * 2160;
+pub(super) const MAX_RENDER_PIXELS: u64 = 3840 * 2160;
 
 pub(super) const DEFAULT_RESOLUTION: [u32; 2] = [1024, 768];
 /// Phones and tablets are wide and steer with on-screen controls, so they
